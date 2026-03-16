@@ -12,16 +12,20 @@ st.set_page_config(layout="wide", page_title="HighLevel CS Performance Tracker")
 
 # --- 2. DATA LOADING & CLEANING ---
 @st.cache_data(ttl=60)
-def load_data(url):
+def load_data(url, sheet_name=None):
     try:
         df = pd.read_csv(url)
-        # Clean column names: remove hidden BOMs, spaces, and ensure consistent casing
         df.columns = df.columns.str.strip().str.replace('\ufeff', '')
-        if 'Email' in df.columns:
+        
+        # Mapping 'Advisor Email' to internal 'Email' key for all relevant sheets
+        if 'Advisor Email' in df.columns:
+            df['Email'] = df['Advisor Email'].astype(str).str.strip().str.lower()
+        elif 'Email' in df.columns:
             df['Email'] = df['Email'].astype(str).str.strip().str.lower()
+            
         return df
     except Exception as e:
-        st.error(f"Error loading data: {e}")
+        st.error(f"Error loading {sheet_name}: {e}")
         return pd.DataFrame()
 
 # --- 3. AUTHENTICATION ---
@@ -29,61 +33,57 @@ if 'auth' not in st.session_state:
     st.session_state.auth = None
 
 if not st.session_state.auth:
-    # Login Screen Header
     col1, col2 = st.columns([1, 5])
     with col1: st.image(LOGO_URL, width=100)
     with col2: st.title("HIGHLEVEL CS PERFORMANCE TRACKER")
     
     with st.form("login"):
-        e_in = st.text_input("Work Email").lower().strip()
+        e_in = st.text_input("Advisor Email").lower().strip()
         p_in = st.text_input("Password", type="password")
         if st.form_submit_button("Login"):
-            team_db = load_data(TEAM_URL)
+            team_db = load_data(TEAM_URL, "Team Details")
             if not team_db.empty:
-                # Login check using cleaned 'Email' column
+                # Login logic using the updated Advisor Email field
                 user_match = team_db[(team_db['Email'] == e_in) & (team_db['Password'].astype(str).str.strip() == p_in)]
                 if not user_match.empty:
                     st.session_state.auth = user_match.iloc[0].to_dict()
                     st.rerun()
-            st.error("Invalid credentials.")
+            st.error("Invalid credentials. Please verify your Advisor Email and Password.")
     st.stop()
 
 # --- 4. PERMISSIONS & DATA FILTERING ---
 user = st.session_state.auth
-# Use .get() to prevent KeyError if 'Access Level' is missing in Team sheet
 level = user.get('Access Level', 'IC') 
-kpi_raw = load_data(KPI_URL)
-dsat_raw = load_data(DSAT_URL)
-team_db = load_data(TEAM_URL)
+kpi_raw = load_data(KPI_URL, "KPI Data")
+dsat_raw = load_data(DSAT_URL, "DSAT Data")
+team_db = load_data(TEAM_URL, "Team Details")
 
-# DSAT Filter: Exclude duplicates
+# DSAT Filter: Exclude rows marked DUPLICATE in the 'Processed' column
 if 'Processed' in dsat_raw.columns:
     dsat_raw = dsat_raw[dsat_raw['Processed'] != 'DUPLICATE']
 
-# Role-Based Filtering Logic
+# Hierarchy Filtering
 if level == "Admin":
-    scope = st.sidebar.radio("View Scope", ["Entire Data", "By Manager Team", "By Advisor"])
-    if scope == "Entire Data":
+    scope = st.sidebar.radio("View Scope", ["Entire Org", "Manager Team", "Individual Advisor"])
+    if scope == "Entire Org":
         f_kpi, f_dsat = kpi_raw, dsat_raw
-    elif scope == "By Manager Team":
-        mgr_list = team_db[team_db['Access Level'] == 'Manager']['Advisor Name'].unique()
-        mgr = st.sidebar.selectbox("Select Manager", mgr_list)
+    elif scope == "Manager Team":
+        mgr = st.sidebar.selectbox("Select Manager", team_db[team_db['Access Level'] == 'Manager']['Advisor Name'].unique())
         team_emails = team_db[team_db['Manager Name'] == mgr]['Email'].unique()
         f_kpi = kpi_raw[kpi_raw['Email'].isin(team_emails)]
         f_dsat = dsat_raw[dsat_raw['Email'].isin(team_emails)]
     else:
-        adv_list = sorted(kpi_raw['Advisor Name'].dropna().unique())
-        adv = st.sidebar.selectbox("Select Advisor", adv_list)
+        adv = st.sidebar.selectbox("Select Advisor", sorted(kpi_raw['Advisor Name'].dropna().unique()))
         f_kpi = kpi_raw[kpi_raw['Advisor Name'] == adv]
-        f_dsat = dsat_raw[dsat_raw['Advisor Name'] == adv]
+        f_dsat = dsat_raw[dsat_raw['Email'] == team_db[team_db['Advisor Name'] == adv]['Email'].iloc[0]]
 
 elif level == "Manager":
     team_emails = team_db[team_db['Manager Name'] == user['Advisor Name']]['Email'].unique()
-    mgr_view = st.sidebar.radio("Manager Scope", ["Full Team View", "Advisor Drill-down"])
+    mgr_view = st.sidebar.radio("Manager Scope", ["Team Summary", "Advisor Drill-down"])
     if mgr_view == "Advisor Drill-down":
         adv_name = st.sidebar.selectbox("Team Member", team_db[team_db['Email'].isin(team_emails)]['Advisor Name'])
         f_kpi = kpi_raw[kpi_raw['Advisor Name'] == adv_name]
-        f_dsat = dsat_raw[dsat_raw['Advisor Name'] == adv_name]
+        f_dsat = dsat_raw[dsat_raw['Email'] == team_db[team_db['Advisor Name'] == adv_name]['Email'].iloc[0]]
     else:
         f_kpi = kpi_raw[kpi_raw['Email'].isin(team_emails)]
         f_dsat = dsat_raw[dsat_raw['Email'].isin(team_emails)]
@@ -92,57 +92,56 @@ else: # IC Access Level
     f_kpi = kpi_raw[kpi_raw['Email'] == user['Email']]
     f_dsat = dsat_raw[dsat_raw['Email'] == user['Email']]
 
-# --- 5. DASHBOARD HEADER ---
+# --- 5. DASHBOARD LAYOUT (TABS) ---
 head1, head2 = st.columns([1, 6])
 with head1: st.image(LOGO_URL, width=80)
-with head2: st.header(f"HIGHLEVEL CS PERFORMANCE TRACKER")
-st.subheader(f"Welcome {user['Advisor Name']} | Access: {level}")
+with head2: st.header("HIGHLEVEL CS PERFORMANCE TRACKER")
+st.caption(f"Welcome {user['Advisor Name']} | Access: {level}")
 
-# --- 6. APP TABS ---
-tab_list = ["Performance", "DSAT Analysis", "Detailed Report"]
+tab_titles = ["Performance Hub", "DSAT Analysis", "Detailed Logs"]
 if level in ["Manager", "Admin"]:
-    tab_list.append("Leaderboards")
-tabs = st.tabs(tab_list)
+    tab_titles.append("Leaderboards")
 
-# TAB 1: Performance Overview
-with tabs[0]:
-    st.markdown("### 📊 Performance Metrics")
-    st.info("Performance Narrative, Summary, and Trends section goes here.")
+tab1, tab2, tab3, *tab4 = st.tabs(tab_titles)
 
-# TAB 2: DSAT Analysis
-with tabs[1]:
-    st.markdown("### 🚫 DSAT Analysis & Feedback")
+with tab1:
+    st.subheader("📊 Performance Insights")
+    st.info("Performance Narrative, Visual Trends, and Metric cards appear here.")
+
+with tab2:
+    st.subheader("🚫 DSAT Analysis & Feedback")
     if not f_dsat.empty:
-        # Field selection: Map 'Timestamp' to 'Date' for display
+        # Field mapping: Timestamp becomes Date
         dsat_cols = ['Timestamp', 'Advisor Name', 'DSAT chat link', 'Feedback']
-        existing_cols = [c for c in dsat_cols if c in f_dsat.columns]
-        display_dsat = f_dsat[existing_cols].copy()
-        if 'Timestamp' in display_dsat.columns:
-            display_dsat.rename(columns={'Timestamp': 'Date'}, inplace=True)
+        existing = [c for c in dsat_cols if c in f_dsat.columns]
+        display_df = f_dsat[existing].copy()
+        if 'Timestamp' in display_df.columns:
+            display_df.rename(columns={'Timestamp': 'Date'}, inplace=True)
         
         if level in ["Manager", "Admin"]:
+            st.write("Management: You can review and draft coaching feedback below.")
             st.data_editor(
-                display_dsat,
+                display_df,
                 column_config={"DSAT chat link": st.column_config.LinkColumn("Chat Link")},
                 disabled=['Date', 'Advisor Name', 'DSAT chat link'],
                 hide_index=True,
                 use_container_width=True
             )
         else:
-            st.dataframe(display_dsat, hide_index=True, use_container_width=True)
+            st.dataframe(display_df, hide_index=True, use_container_width=True)
     else:
-        st.write("No DSAT records found for this selection.")
+        st.write("No DSAT records found for this scope.")
 
-# TAB 3: Detailed Report
-with tabs[2]:
-    st.markdown("### 📝 Detailed KPI Report")
+with tab3:
+    st.subheader("📝 Detailed KPI Log")
     st.dataframe(f_kpi, hide_index=True, use_container_width=True)
 
-# TAB 4: Leaderboards (Manager/Admin Only)
-if len(tabs) > 3:
-    with tabs[3]:
-        st.markdown("### 🏆 Team Leaderboards")
-        st.write("Leaderboard metrics and Success Champions rankings.")
+if tab4:
+    with tab4[0]:
+        st.subheader("🏆 Organization Rankings")
+        st.write("Leaderboard data restricted to Management and Admin access.")
 
 st.sidebar.divider()
-st.sidebar.button("Logout", on_click=lambda: st.session_state.update({'auth': None}))
+if st.sidebar.button("Logout"):
+    st.session_state.auth = None
+    st.rerun()
