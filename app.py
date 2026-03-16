@@ -26,15 +26,14 @@ def format_minutes_to_hours(total_minutes):
     if pd.isna(total_minutes) or total_minutes <= 0: return "0h 0m"
     return f"{int(total_minutes // 60)}h {int(total_minutes % 60)}m"
 
-# --- 3. DATA LOADING & MAPPING ENGINE ---
+# --- 3. DATA LOADING & MAPPING ---
 @st.cache_data(ttl=60)
 def load_data(url, sheet_type=None):
     try:
         df = pd.read_csv(url)
-        # Aggressive cleaning of headers
         df.columns = df.columns.str.strip().str.replace('\ufeff', '').str.replace('"', '')
         
-        # MAPPING ENGINE: Rename your sheet columns to standard internal names
+        # MAPPING ENGINE
         mappings = {
             "KPI": {
                 "Date_level - AS": "Date",
@@ -55,27 +54,23 @@ def load_data(url, sheet_type=None):
         if sheet_type in mappings:
             df.rename(columns=mappings[sheet_type], inplace=True)
         
-        # Ensure Email column is always lowercase for login/matching
-        email_col = 'Email' if 'Email' in df.columns else 'Advisor Email'
-        if email_col in df.columns:
-            df['Email'] = df[email_col].astype(str).str.strip().str.lower()
+        if 'Email' in df.columns:
+            df['Email'] = df['Email'].astype(str).str.strip().str.lower()
+        elif 'Advisor Email' in df.columns: # Fallback
+            df['Email'] = df['Advisor Email'].astype(str).str.strip().str.lower()
             
-        # Specific KPI numeric parsing
         if sheet_type == "KPI":
-            # Re-check columns after mapping
             ia_col = 'IA_Hours' if 'IA_Hours' in df.columns else 'IA'
             call_col = 'Advisor Call Time' if 'Advisor Call Time' in df.columns else 'Advisor Call Time '
-            
             df['IA_Mins'] = df[ia_col].apply(parse_time_to_minutes)
             df['Call_Mins'] = df[call_col].apply(parse_time_to_minutes)
             df['Shift_Score'] = (df['Call_Mins'] / df['IA_Mins'] * 100).fillna(0)
-            
             for col in ['Sent Rate %', 'Satisfied Survey %', 'Total Survey']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', '').str.strip(), errors='coerce').fillna(0)
         return df
     except Exception as e:
-        st.error(f"Error processing {sheet_type} data: {e}")
+        st.error(f"Error processing {sheet_type}: {e}")
         return pd.DataFrame()
 
 # --- 4. AUTHENTICATION ---
@@ -91,7 +86,6 @@ if not st.session_state.auth:
         if st.form_submit_button("Login"):
             team_db = load_data(TEAM_URL, "TEAM")
             if not team_db.empty:
-                # Password matching
                 user_match = team_db[(team_db['Email'] == e_in) & (team_db['Password'].astype(str).str.strip() == str(p_in).strip())]
                 if not user_match.empty:
                     st.session_state.auth = user_match.iloc[0].to_dict()
@@ -106,7 +100,6 @@ kpi_raw = load_data(KPI_URL, "KPI")
 dsat_raw = load_data(DSAT_URL, "DSAT")
 team_db = load_data(TEAM_URL, "TEAM")
 
-# Standardize Dates
 kpi_raw['Date_Parsed'] = pd.to_datetime(kpi_raw['Date'], format="%b'%d'%y", errors='coerce')
 dsat_raw['Date_Parsed'] = pd.to_datetime(dsat_raw['Timestamp'], errors='coerce')
 
@@ -169,7 +162,6 @@ st.caption(f"Welcome {user['Advisor Name']} | Access: {level} | Period: {sel}")
 tabs = st.tabs(["Performance Hub", "DSAT Analysis", "Detailed Logs"] + (["Leaderboards"] if level in ["Manager", "Admin"] else []))
 
 with tabs[0]:
-    # --- PERFORMANCE SUMMARY ---
     avg_score = f_kpi['Shift_Score'].mean() if not f_kpi.empty else 0
     avg_ia = f_kpi['IA_Mins'].mean() if not f_kpi.empty else 0
     avg_sent = f_kpi[f_kpi['Total Survey'] > 0]['Sent Rate %'].mean() if not f_kpi.empty else 0
@@ -182,20 +174,26 @@ with tabs[0]:
     m[3].metric("Avg Satisfied Survey", f"{avg_sat:.1f}%", delta="Goal: >90%")
     m[4].metric("Total Survey", int(f_kpi['Total Survey'].sum()) if not f_kpi.empty else 0)
     
-    # Trends
     if not f_kpi.empty:
         chart_data = f_kpi.groupby('Date_Parsed').mean(numeric_only=True).reset_index()
         st.plotly_chart(px.line(chart_data, x='Date_Parsed', y='Shift_Score', title="Shift Score Trend", markers=True), use_container_width=True)
 
 with tabs[1]:
-    if not f_dsat.empty:
-        df_view = f_dsat[['Timestamp', 'Advisor Name', 'DSAT chat link', 'Feedback']].copy()
-        df_view.rename(columns={'Timestamp': 'Date'}, inplace=True)
+    # SAFE COLUMN SELECTION TO PREVENT KEYERROR
+    target_cols = ['Timestamp', 'Advisor Name', 'DSAT chat link', 'Feedback']
+    available_cols = [c for c in target_cols if c in f_dsat.columns]
+    
+    if not f_dsat.empty and available_cols:
+        df_view = f_dsat[available_cols].copy()
+        if 'Timestamp' in df_view.columns:
+            df_view.rename(columns={'Timestamp': 'Date'}, inplace=True)
+            
         if level in ["Manager", "Admin"]:
             st.data_editor(df_view, column_config={"DSAT chat link": st.column_config.LinkColumn("Chat Link")}, hide_index=True, use_container_width=True)
         else:
             st.dataframe(df_view, hide_index=True, use_container_width=True)
-    else: st.write("No DSAT records found.")
+    else: 
+        st.write("No DSAT records found for this selection.")
 
 with tabs[2]:
     st.dataframe(f_kpi, hide_index=True, use_container_width=True)
@@ -213,4 +211,3 @@ st.sidebar.divider()
 if st.sidebar.button("Logout"):
     st.session_state.auth = None
     st.rerun()
-    
