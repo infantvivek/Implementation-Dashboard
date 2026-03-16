@@ -15,7 +15,7 @@ def parse_time_to_minutes(time_str):
     if pd.isna(time_str) or not isinstance(time_str, str): return 0
     try:
         h, m = 0, 0
-        parts = time_str.split()
+        parts = time_str.lower().split()
         for p in parts:
             if 'h' in p: h = int(p.replace('h', ''))
             elif 'm' in p: m = int(p.replace('m', ''))
@@ -26,30 +26,56 @@ def format_minutes_to_hours(total_minutes):
     if pd.isna(total_minutes) or total_minutes <= 0: return "0h 0m"
     return f"{int(total_minutes // 60)}h {int(total_minutes % 60)}m"
 
-# --- 3. DATA LOADING & CLEANING ---
+# --- 3. DATA LOADING & MAPPING ENGINE ---
 @st.cache_data(ttl=60)
 def load_data(url, sheet_type=None):
     try:
         df = pd.read_csv(url)
-        # Aggressive header cleaning to fix KeyError
+        # Aggressive cleaning of headers
         df.columns = df.columns.str.strip().str.replace('\ufeff', '').str.replace('"', '')
         
-        if 'Advisor Email' in df.columns:
-            df['Email'] = df['Advisor Email'].astype(str).str.strip().str.lower()
-        elif 'Email' in df.columns:
-            df['Email'] = df['Email'].astype(str).str.strip().str.lower()
+        # MAPPING ENGINE: Rename your sheet columns to standard internal names
+        mappings = {
+            "KPI": {
+                "Date_level - AS": "Date",
+                "Agent Name": "Advisor Name",
+                "IA": "IA_Hours",
+                "Advisor Call Time ": "Advisor Call Time"
+            },
+            "TEAM": {
+                "Manager": "Manager Name",
+                "Access level": "Access Level"
+            },
+            "DSAT": {
+                "Advisor Email": "Email",
+                "Chat DSAT URL": "DSAT chat link"
+            }
+        }
+        
+        if sheet_type in mappings:
+            df.rename(columns=mappings[sheet_type], inplace=True)
+        
+        # Ensure Email column is always lowercase for login/matching
+        email_col = 'Email' if 'Email' in df.columns else 'Advisor Email'
+        if email_col in df.columns:
+            df['Email'] = df[email_col].astype(str).str.strip().str.lower()
             
         # Specific KPI numeric parsing
         if sheet_type == "KPI":
-            df['IA_Mins'] = df['IA_Hours'].apply(parse_time_to_minutes)
-            df['Call_Mins'] = df['Advisor Call Time'].apply(parse_time_to_minutes)
+            # Re-check columns after mapping
+            ia_col = 'IA_Hours' if 'IA_Hours' in df.columns else 'IA'
+            call_col = 'Advisor Call Time' if 'Advisor Call Time' in df.columns else 'Advisor Call Time '
+            
+            df['IA_Mins'] = df[ia_col].apply(parse_time_to_minutes)
+            df['Call_Mins'] = df[call_col].apply(parse_time_to_minutes)
             df['Shift_Score'] = (df['Call_Mins'] / df['IA_Mins'] * 100).fillna(0)
+            
             for col in ['Sent Rate %', 'Satisfied Survey %', 'Total Survey']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', '').str.strip(), errors='coerce').fillna(0)
         return df
     except Exception as e:
-        st.error(f"Error loading {sheet_type}: {e}")
+        st.error(f"Error processing {sheet_type} data: {e}")
         return pd.DataFrame()
 
 # --- 4. AUTHENTICATION ---
@@ -60,12 +86,13 @@ if not st.session_state.auth:
     with col1: st.image(LOGO_URL, width=100)
     with col2: st.title("HIGHLEVEL CS PERFORMANCE TRACKER")
     with st.form("login"):
-        e_in = st.text_input("Advisor Email").lower().strip()
+        e_in = st.text_input("Work Email").lower().strip()
         p_in = st.text_input("Password", type="password")
         if st.form_submit_button("Login"):
             team_db = load_data(TEAM_URL, "TEAM")
             if not team_db.empty:
-                user_match = team_db[(team_db['Email'] == e_in) & (team_db['Password'].astype(str).str.strip() == p_in)]
+                # Password matching
+                user_match = team_db[(team_db['Email'] == e_in) & (team_db['Password'].astype(str).str.strip() == str(p_in).strip())]
                 if not user_match.empty:
                     st.session_state.auth = user_match.iloc[0].to_dict()
                     st.rerun()
@@ -120,43 +147,45 @@ if level == "Admin":
         f_kpi, f_dsat = f_kpi_time[f_kpi_time['Email'].isin(emails)], f_dsat_time[f_dsat_time['Email'].isin(emails)]
     else:
         adv = st.sidebar.selectbox("Advisor", sorted(kpi_raw['Advisor Name'].dropna().unique()))
-        f_kpi, f_dsat = f_kpi_time[f_kpi_time['Advisor Name'] == adv], f_dsat_time[f_dsat_time['Advisor Name'] == adv]
+        f_kpi, f_dsat = f_kpi_time[f_kpi_time['Advisor Name'] == adv], f_dsat_time[f_dsat_time['Email'].isin(team_db[team_db['Advisor Name']==adv]['Email'])]
 elif level == "Manager":
     emails = team_db[team_db['Manager Name'] == user['Advisor Name']]['Email'].unique()
     sub = st.sidebar.radio("View", ["Team", "Drill-down"])
     if sub == "Drill-down":
         adv = st.sidebar.selectbox("Member", team_db[team_db['Email'].isin(emails)]['Advisor Name'])
-        f_kpi, f_dsat = f_kpi_time[f_kpi_time['Advisor Name'] == adv], f_dsat_time[f_dsat_time['Advisor Name'] == adv]
+        f_kpi, f_dsat = f_kpi_time[f_kpi_time['Advisor Name'] == adv], f_dsat_time[f_dsat_time['Email'].isin(team_db[team_db['Advisor Name']==adv]['Email'])]
     else:
         f_kpi, f_dsat = f_kpi_time[f_kpi_time['Email'].isin(emails)], f_dsat_time[f_dsat_time['Email'].isin(emails)]
 else:
     f_kpi, f_dsat = f_kpi_time[f_kpi_time['Email'] == user['Email']], f_dsat_time[f_dsat_time['Email'] == user['Email']]
 
-# --- 8. TABS ---
+# --- 8. DASHBOARD HEADER ---
 head1, head2 = st.columns([1, 6])
 with head1: st.image(LOGO_URL, width=80)
 with head2: st.header("HIGHLEVEL CS PERFORMANCE TRACKER")
 st.caption(f"Welcome {user['Advisor Name']} | Access: {level} | Period: {sel}")
 
+# --- 9. TABS ---
 tabs = st.tabs(["Performance Hub", "DSAT Analysis", "Detailed Logs"] + (["Leaderboards"] if level in ["Manager", "Admin"] else []))
 
 with tabs[0]:
     # --- PERFORMANCE SUMMARY ---
-    avg_score = f_kpi['Shift_Score'].mean()
-    avg_ia = f_kpi['IA_Mins'].mean()
-    avg_sent = f_kpi[f_kpi['Total Survey'] > 0]['Sent Rate %'].mean()
-    avg_sat = f_kpi[f_kpi['Total Survey'] > 0]['Satisfied Survey %'].mean()
+    avg_score = f_kpi['Shift_Score'].mean() if not f_kpi.empty else 0
+    avg_ia = f_kpi['IA_Mins'].mean() if not f_kpi.empty else 0
+    avg_sent = f_kpi[f_kpi['Total Survey'] > 0]['Sent Rate %'].mean() if not f_kpi.empty else 0
+    avg_sat = f_kpi[f_kpi['Total Survey'] > 0]['Satisfied Survey %'].mean() if not f_kpi.empty else 0
     
     m = st.columns(5)
     m[0].metric("Avg Shift Score", f"{avg_score:.1f}%", delta="Goal: >80%")
     m[1].metric("Avg IA Hours", format_minutes_to_hours(avg_ia), delta="Goal: >6h")
     m[2].metric("Avg Sent Rate %", f"{avg_sent:.1f}%", delta="Goal: >=85%")
     m[3].metric("Avg Satisfied Survey", f"{avg_sat:.1f}%", delta="Goal: >90%")
-    m[4].metric("Total Survey", int(f_kpi['Total Survey'].sum()))
+    m[4].metric("Total Survey", int(f_kpi['Total Survey'].sum()) if not f_kpi.empty else 0)
     
     # Trends
-    chart_data = f_kpi.groupby('Date_Parsed').mean(numeric_only=True).reset_index() if level in ["Admin", "Manager"] else f_kpi
-    st.plotly_chart(px.line(chart_data, x='Date_Parsed', y='Shift_Score', title="Shift Score Trend", markers=True), use_container_width=True)
+    if not f_kpi.empty:
+        chart_data = f_kpi.groupby('Date_Parsed').mean(numeric_only=True).reset_index()
+        st.plotly_chart(px.line(chart_data, x='Date_Parsed', y='Shift_Score', title="Shift Score Trend", markers=True), use_container_width=True)
 
 with tabs[1]:
     if not f_dsat.empty:
@@ -171,10 +200,11 @@ with tabs[1]:
 with tabs[2]:
     st.dataframe(f_kpi, hide_index=True, use_container_width=True)
 
-if level in ["Manager", "Admin"]:
+if level in ["Manager", "Admin"] and len(tabs) > 3:
     with tabs[3]:
-        if level == "Admin":
-            audit = f_dsat_time.merge(team_db[['Email', 'Manager Name']], on='Email', how='left')
+        st.subheader("Audit & Rankings")
+        if level == "Admin" and not dsat_raw.empty:
+            audit = dsat_raw.merge(team_db[['Email', 'Manager Name']], on='Email', how='left')
             audit['Coached'] = audit['Feedback'].fillna('').str.strip().astype(bool)
             stats = audit.groupby('Manager Name')['Coached'].mean().reset_index()
             st.plotly_chart(px.bar(stats, x='Manager Name', y='Coached', title="Coaching Completion %", range_y=[0, 1]), use_container_width=True)
