@@ -26,21 +26,27 @@ def format_minutes_to_hours(total_minutes):
     if pd.isna(total_minutes) or total_minutes <= 0: return "0h 0m"
     return f"{int(total_minutes // 60)}h {int(total_minutes % 60)}m"
 
-# --- 3. DATA LOADING & MAPPING ---
+# --- 3. DATA LOADING & ROBUST MAPPING ---
 @st.cache_data(ttl=60)
 def load_data(url, sheet_type=None):
     try:
         df = pd.read_csv(url)
         df.columns = df.columns.str.strip().str.replace('\ufeff', '').str.replace('"', '')
         
+        # Consistent mapping across all sheet variants
         mappings = {
             "KPI": {"Date_level - AS": "Date", "Agent Name": "Advisor Name", "IA": "IA_Hours", "Advisor Call Time ": "Advisor Call Time"},
-            "TEAM": {"Manager": "Manager Name", "Access level": "Access Level"},
+            "TEAM": {"Manager": "Manager Name", "Access level": "Access Level", "Advisor Email": "Email"},
             "DSAT": {"Advisor Email": "Email", "Chat DSAT URL": "DSAT chat link", "Type": "Type"}
         }
         
         if sheet_type in mappings:
             df.rename(columns=mappings[sheet_type], inplace=True)
+        
+        # Fallback to ensure 'Email' column exists internally
+        if 'Email' not in df.columns:
+            if 'Advisor Email' in df.columns:
+                df['Email'] = df['Advisor Email']
         
         if 'Email' in df.columns:
             df['Email'] = df['Email'].astype(str).str.strip().str.lower()
@@ -67,16 +73,17 @@ if not st.session_state.auth:
     with col1: st.image(LOGO_URL, width=100)
     with col2: st.title("HIGHLEVEL CS PERFORMANCE TRACKER")
     with st.form("login"):
-        e_in = st.text_input("Work Email").lower().strip()
+        e_in = st.text_input("Advisor Email").lower().strip()
         p_in = st.text_input("Password", type="password")
         if st.form_submit_button("Login"):
             team_db = load_data(TEAM_URL, "TEAM")
             if not team_db.empty:
+                # Login logic checks the cleaned 'Email' column (mapped from Advisor Email)
                 user_match = team_db[(team_db['Email'] == e_in) & (team_db['Password'].astype(str).str.strip() == str(p_in).strip())]
                 if not user_match.empty:
                     st.session_state.auth = user_match.iloc[0].to_dict()
                     st.rerun()
-            st.error("Invalid credentials.")
+            st.error("Invalid credentials. Please verify your Advisor Email and Password.")
     st.stop()
 
 # --- 5. DATA PREP ---
@@ -136,7 +143,8 @@ elif level == "Manager":
     else:
         f_kpi, f_dsat = f_kpi_time[f_kpi_time['Email'].isin(emails)], f_dsat_time[f_dsat_time['Email'].isin(emails)]
 else:
-    f_kpi, f_dsat = f_kpi_time[f_kpi_time['Email'] == user['Email']], f_dsat_time[f_dsat_time['Email'] == user['Email']]
+    f_kpi = f_kpi_time[f_kpi_time['Email'] == user['Email']]
+    f_dsat = f_dsat_time[f_dsat_time['Email'] == user['Email']]
 
 # --- 8. DASHBOARD HEADER ---
 head1, head2 = st.columns([1, 6])
@@ -148,7 +156,6 @@ st.caption(f"Welcome {user['Advisor Name']} | Access: {level} | Period: {sel}")
 tabs = st.tabs(["Performance Hub", "DSAT Analysis", "Detailed Logs"] + (["Leaderboards"] if level in ["Manager", "Admin"] else []))
 
 with tabs[0]:
-    # CALCULATE NARRATIVE DATA
     avg_score = f_kpi['Shift_Score'].mean() if not f_kpi.empty else 0
     avg_ia = f_kpi['IA_Mins'].mean() if not f_kpi.empty else 0
     avg_sent = f_kpi[f_kpi['Total Survey'] > 0]['Sent Rate %'].mean() if not f_kpi.empty else 0
@@ -156,12 +163,11 @@ with tabs[0]:
     total_dsat = len(f_dsat)
 
     st.markdown("### 📝 Performance Narrative")
-    narrative_text = (
-        f"1. Overall Performance: In the selected period, you maintained a Satisfaction rate of **{avg_sat:.1f}%** with a Survey Sent rate of **{avg_sent:.1f}%**.\n"
-        f"2. Productivity Tracking: Average IA availability was **{format_minutes_to_hours(avg_ia)}**, resulting in an overall Shift Score of **{avg_score:.1f}%**.\n"
-        f"3. Quality Focus: There were **{total_dsat}** DSAT entries recorded; please review the DSAT Analysis tab for specific feedback and coaching notes."
-    )
-    st.info(narrative_text)
+    st.info(f"""
+    1. **Overall Quality:** You achieved a Satisfaction rate of **{avg_sat:.1f}%** with a Survey Sent rate of **{avg_sent:.1f}%**.
+    2. **Time & Efficiency:** Average IA availability was **{format_minutes_to_hours(avg_ia)}**, resulting in a Shift Score of **{avg_score:.1f}%**.
+    3. **Coaching Opportunity:** There are **{total_dsat}** DSAT entries for review in the DSAT tab for the selected period.
+    """)
     
     m = st.columns(5)
     m[0].metric("Avg Shift Score", f"{avg_score:.1f}%", delta="Goal: >80%")
@@ -176,10 +182,11 @@ with tabs[0]:
 
 with tabs[1]:
     st.markdown("### 🚫 DSAT Analysis & Feedback")
+    # Mapping engine ensures 'DSAT chat link' and 'Type' exist
     target_cols = ['Timestamp', 'Advisor Name', 'DSAT chat link', 'Type', 'Feedback']
     available_cols = [c for c in target_cols if c in f_dsat.columns]
     
-    if not f_dsat.empty and available_cols:
+    if not f_dsat.empty:
         df_view = f_dsat[available_cols].copy()
         if 'Timestamp' in df_view.columns:
             df_view.rename(columns={'Timestamp': 'Date'}, inplace=True)
@@ -188,22 +195,22 @@ with tabs[1]:
             st.data_editor(
                 df_view, 
                 column_config={"DSAT chat link": st.column_config.LinkColumn("Chat Link")}, 
-                hide_index=True, 
-                use_container_width=True,
+                hide_index=True, use_container_width=True,
                 disabled=['Date', 'Advisor Name', 'DSAT chat link', 'Type']
             )
         else:
             st.dataframe(
                 df_view, 
                 column_config={"DSAT chat link": st.column_config.LinkColumn("Chat Link")},
-                hide_index=True, 
-                use_container_width=True
+                hide_index=True, use_container_width=True
             )
-    else: 
-        st.write("No DSAT records found for this selection.")
+    else: st.write("No DSAT records found for this selection.")
 
 with tabs[2]:
-    st.dataframe(f_kpi, hide_index=True, use_container_width=True)
+    # Display kpi formatted with DD-MM-YYYY
+    kpi_display = f_kpi.copy()
+    kpi_display['Date'] = kpi_display['Date_Parsed'].dt.strftime('%d-%m-%Y')
+    st.dataframe(kpi_display.drop(columns=['Date_Parsed'], errors='ignore'), hide_index=True, use_container_width=True)
 
 if level in ["Manager", "Admin"] and len(tabs) > 3:
     with tabs[3]:
