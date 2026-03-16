@@ -33,22 +33,10 @@ def load_data(url, sheet_type=None):
         df = pd.read_csv(url)
         df.columns = df.columns.str.strip().str.replace('\ufeff', '').str.replace('"', '')
         
-        # MAPPING ENGINE
         mappings = {
-            "KPI": {
-                "Date_level - AS": "Date",
-                "Agent Name": "Advisor Name",
-                "IA": "IA_Hours",
-                "Advisor Call Time ": "Advisor Call Time"
-            },
-            "TEAM": {
-                "Manager": "Manager Name",
-                "Access level": "Access Level"
-            },
-            "DSAT": {
-                "Advisor Email": "Email",
-                "Chat DSAT URL": "DSAT chat link"
-            }
+            "KPI": {"Date_level - AS": "Date", "Agent Name": "Advisor Name", "IA": "IA_Hours", "Advisor Call Time ": "Advisor Call Time"},
+            "TEAM": {"Manager": "Manager Name", "Access level": "Access Level"},
+            "DSAT": {"Advisor Email": "Email", "Chat DSAT URL": "DSAT chat link", "Type": "Type"}
         }
         
         if sheet_type in mappings:
@@ -56,8 +44,6 @@ def load_data(url, sheet_type=None):
         
         if 'Email' in df.columns:
             df['Email'] = df['Email'].astype(str).str.strip().str.lower()
-        elif 'Advisor Email' in df.columns: # Fallback
-            df['Email'] = df['Advisor Email'].astype(str).str.strip().str.lower()
             
         if sheet_type == "KPI":
             ia_col = 'IA_Hours' if 'IA_Hours' in df.columns else 'IA'
@@ -162,10 +148,20 @@ st.caption(f"Welcome {user['Advisor Name']} | Access: {level} | Period: {sel}")
 tabs = st.tabs(["Performance Hub", "DSAT Analysis", "Detailed Logs"] + (["Leaderboards"] if level in ["Manager", "Admin"] else []))
 
 with tabs[0]:
+    # CALCULATE NARRATIVE DATA
     avg_score = f_kpi['Shift_Score'].mean() if not f_kpi.empty else 0
     avg_ia = f_kpi['IA_Mins'].mean() if not f_kpi.empty else 0
     avg_sent = f_kpi[f_kpi['Total Survey'] > 0]['Sent Rate %'].mean() if not f_kpi.empty else 0
     avg_sat = f_kpi[f_kpi['Total Survey'] > 0]['Satisfied Survey %'].mean() if not f_kpi.empty else 0
+    total_dsat = len(f_dsat)
+
+    st.markdown("### 📝 Performance Narrative")
+    narrative_text = (
+        f"1. Overall Performance: In the selected period, you maintained a Satisfaction rate of **{avg_sat:.1f}%** with a Survey Sent rate of **{avg_sent:.1f}%**.\n"
+        f"2. Productivity Tracking: Average IA availability was **{format_minutes_to_hours(avg_ia)}**, resulting in an overall Shift Score of **{avg_score:.1f}%**.\n"
+        f"3. Quality Focus: There were **{total_dsat}** DSAT entries recorded; please review the DSAT Analysis tab for specific feedback and coaching notes."
+    )
+    st.info(narrative_text)
     
     m = st.columns(5)
     m[0].metric("Avg Shift Score", f"{avg_score:.1f}%", delta="Goal: >80%")
@@ -179,8 +175,8 @@ with tabs[0]:
         st.plotly_chart(px.line(chart_data, x='Date_Parsed', y='Shift_Score', title="Shift Score Trend", markers=True), use_container_width=True)
 
 with tabs[1]:
-    # SAFE COLUMN SELECTION TO PREVENT KEYERROR
-    target_cols = ['Timestamp', 'Advisor Name', 'DSAT chat link', 'Feedback']
+    st.markdown("### 🚫 DSAT Analysis & Feedback")
+    target_cols = ['Timestamp', 'Advisor Name', 'DSAT chat link', 'Type', 'Feedback']
     available_cols = [c for c in target_cols if c in f_dsat.columns]
     
     if not f_dsat.empty and available_cols:
@@ -189,9 +185,20 @@ with tabs[1]:
             df_view.rename(columns={'Timestamp': 'Date'}, inplace=True)
             
         if level in ["Manager", "Admin"]:
-            st.data_editor(df_view, column_config={"DSAT chat link": st.column_config.LinkColumn("Chat Link")}, hide_index=True, use_container_width=True)
+            st.data_editor(
+                df_view, 
+                column_config={"DSAT chat link": st.column_config.LinkColumn("Chat Link")}, 
+                hide_index=True, 
+                use_container_width=True,
+                disabled=['Date', 'Advisor Name', 'DSAT chat link', 'Type']
+            )
         else:
-            st.dataframe(df_view, hide_index=True, use_container_width=True)
+            st.dataframe(
+                df_view, 
+                column_config={"DSAT chat link": st.column_config.LinkColumn("Chat Link")},
+                hide_index=True, 
+                use_container_width=True
+            )
     else: 
         st.write("No DSAT records found for this selection.")
 
