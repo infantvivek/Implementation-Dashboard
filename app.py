@@ -9,7 +9,7 @@ KPI_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSU-KDmKs9i1EIEuIuJTu
 DSAT_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSU-KDmKs9i1EIEuIuJTuKKxG4nFZoPluRqOonP2BxRbQuVJunS8WQ9uJA6ayUCdoq043uFMH6u3UcM/pub?gid=367459010&single=true&output=csv"
 LOGO_URL = "https://s3.amazonaws.com/cdn.freshdesk.com/data/helpdesk/attachments/production/48175265495/original/PTXBCP40UHx-8LCKsM1zqLX-pq8nndFHSw.png?1641235482"
 
-# PRE-FILLED FORM CONFIG (Replace placeholders with your Form IDs)
+# PRE-FILLED FORM CONFIG
 FORM_ID = "YOUR_FORM_ID"
 ENTRY_KEY = "entry.1"
 ENTRY_FEEDBACK = "entry.2"
@@ -38,54 +38,45 @@ def generate_form_url(row):
     params = {ENTRY_KEY: row.get('RecordKey',''), ENTRY_FEEDBACK: row.get('Feedback',''), ENTRY_TYPE: row.get('Type','')}
     return f"{base}&{urllib.parse.urlencode(params)}"
 
-# --- 3. DATA LOADING & MAPPING ENGINE ---
+# --- 3. ROBUST DATA LOADING ---
 @st.cache_data(ttl=60)
 def load_data(url, sheet_type=None):
     try:
         df = pd.read_csv(url)
+        # Clean headers immediately
         df.columns = df.columns.str.strip().str.replace('\ufeff', '').str.replace('"', '')
         
-        # MAPPINGS TO FIX KEYERRORS
-        mappings = {
-            "KPI": {
+        # Internal Mapping Engine
+        if sheet_type == "KPI":
+            df = df.rename(columns={
                 "Date_level - AS": "Date", 
                 "Agent Name": "Advisor Name", 
                 "IA": "IA_Hours",
                 "Advisor Call Time ": "Advisor Call Time",
                 "Manager": "Manager Name"
-            },
-            "TEAM": {
-                "Manager": "Manager Name", 
-                "Access level": "Access Level",
-                "Advisor Email": "Email"
-            },
-            "DSAT": {
-                "Advisor Email": "Email", 
-                "Chat DSAT URL": "DSAT chat link",
-                "Manager": "Manager Name"
-            }
-        }
-        
-        if sheet_type in mappings:
-            df.rename(columns=mappings[sheet_type], inplace=True)
-        
-        if 'Email' not in df.columns and 'Advisor Email' in df.columns:
-            df['Email'] = df['Advisor Email']
-        
-        if 'Email' in df.columns:
-            df['Email'] = df['Email'].astype(str).str.strip().str.lower()
-            
-        if sheet_type == "KPI":
-            ia_col = 'IA_Hours' if 'IA_Hours' in df.columns else 'IA'
-            df['IA_Mins'] = df[ia_col].apply(parse_time_to_minutes)
-            df['Call_Mins'] = df['Advisor Call Time'].apply(parse_time_to_minutes) if 'Advisor Call Time' in df.columns else 0
+            })
+            # Safe numeric conversion
+            df['IA_Mins'] = df['IA_Hours'].apply(parse_time_to_minutes)
+            df['Call_Mins'] = df['Advisor Call Time'].apply(parse_time_to_minutes)
             df['Shift_Score'] = (df['Call_Mins'] / df['IA_Mins'] * 100).fillna(0)
-            for col in ['Sent Rate %', 'Satisfied Survey %', 'Total Survey', 'Q/A Calls', 'OB Calls']:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', '').strip(), errors='coerce').fillna(0)
+            for c in ['Sent Rate %', 'Satisfied Survey %', 'Total Survey', 'Q/A Calls', 'OB Calls']:
+                if c in df.columns:
+                    df[c] = pd.to_numeric(df[c].astype(str).str.replace('%', '').str.strip(), errors='coerce').fillna(0)
+        
+        elif sheet_type == "TEAM":
+            df = df.rename(columns={"Manager": "Manager Name", "Access level": "Access Level", "Advisor Email": "Email"})
+        
+        elif sheet_type == "DSAT":
+            df = df.rename(columns={"Advisor Email": "Email", "Chat DSAT URL": "DSAT chat link", "Manager": "Manager Name"})
+
+        # Final Email Normalization
+        target_email_col = 'Email' if 'Email' in df.columns else ('Advisor Email' if 'Advisor Email' in df.columns else None)
+        if target_email_col:
+            df['Email'] = df[target_email_col].astype(str).str.strip().str.lower()
+            
         return df
     except Exception as e:
-        st.error(f"Error processing {sheet_type}: {e}")
+        st.error(f"Critical Error in {sheet_type}: {e}")
         return pd.DataFrame()
 
 # --- 4. AUTHENTICATION ---
@@ -96,6 +87,7 @@ if not st.session_state.auth:
         e_in, p_in = st.text_input("Work Email").lower().strip(), st.text_input("Password", type="password")
         if st.form_submit_button("Login"):
             team_db = load_data(TEAM_URL, "TEAM")
+            # FIXED: Added .str before .strip() and normalized login check
             user_match = team_db[(team_db['Email'] == e_in) & (team_db['Password'].astype(str).str.strip() == str(p_in).strip())]
             if not user_match.empty:
                 st.session_state.auth = user_match.iloc[0].to_dict()
@@ -107,9 +99,11 @@ if not st.session_state.auth:
 user, kpi_raw, dsat_raw, team_db = st.session_state.auth, load_data(KPI_URL, "KPI"), load_data(DSAT_URL, "DSAT"), load_data(TEAM_URL, "TEAM")
 level = user.get('Access Level', 'IC') 
 
-# Fix Date parsing using mapped column name
-kpi_raw['Date_Parsed'] = pd.to_datetime(kpi_raw['Date'], format="%b'%d'%y", errors='coerce')
-dsat_raw['Date_Parsed'] = pd.to_datetime(dsat_raw['Timestamp'], errors='coerce')
+# Safe Date Parsing
+if 'Date' in kpi_raw.columns:
+    kpi_raw['Date_Parsed'] = pd.to_datetime(kpi_raw['Date'], format="%b'%d'%y", errors='coerce')
+if 'Timestamp' in dsat_raw.columns:
+    dsat_raw['Date_Parsed'] = pd.to_datetime(dsat_raw['Timestamp'], errors='coerce')
 
 if 'Processed' in dsat_raw.columns:
     dsat_raw = dsat_raw[dsat_raw['Processed'] != 'DUPLICATE']
@@ -120,7 +114,7 @@ freq = st.sidebar.radio("Frequency:", ["Daily", "Weekly", "Monthly"], horizontal
 
 if freq == "Daily":
     available = sorted(kpi_raw['Date_Parsed'].dropna().unique(), reverse=True)
-    sel = st.sidebar.selectbox("Date:", available, format_func=lambda x: x.strftime('%d-%m-%Y'))
+    sel = st.sidebar.selectbox("Date:", available, format_func=lambda x: x.strftime('%d-%m-%Y') if not pd.isna(x) else "N/A")
     f_kpi_t, f_dsat_t = kpi_raw[kpi_raw['Date_Parsed'] == sel], dsat_raw[dsat_raw['Date_Parsed'].dt.normalize() == sel]
 elif freq == "Weekly":
     kpi_raw['W_Start'] = kpi_raw['Date_Parsed'] - pd.to_timedelta((kpi_raw['Date_Parsed'].dt.dayofweek + 1) % 7, unit='d')
@@ -140,14 +134,14 @@ if level == "Admin":
         emails = team_db[team_db['Manager Name'] == m_name]['Email'].unique()
         f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'].isin(emails)], f_dsat_t[f_dsat_t['Email'].isin(emails)]
     else:
-        a_name = st.sidebar.selectbox("Advisor", sorted(kpi_raw['Advisor Name'].dropna().unique()))
-        f_kpi, f_dsat = f_kpi_t[f_kpi_t['Advisor Name'] == a_name], f_dsat_t[f_dsat_t['Email'].isin(team_db[team_db['Advisor Name']==a_name]['Email'])]
+        adv_n = st.sidebar.selectbox("Advisor", sorted(kpi_raw['Advisor Name'].dropna().unique()))
+        f_kpi, f_dsat = f_kpi_t[f_kpi_t['Advisor Name'] == adv_n], f_dsat_t[f_dsat_t['Email'].isin(team_db[team_db['Advisor Name']==adv_n]['Email'])]
 elif level == "Manager":
     emails = team_db[team_db['Manager Name'] == user['Advisor Name']]['Email'].unique()
     sub = st.sidebar.radio("View", ["Team", "Drill-down"])
     if sub == "Drill-down":
-        a_name = st.sidebar.selectbox("Member", team_db[team_db['Email'].isin(emails)]['Advisor Name'])
-        f_kpi, f_dsat = f_kpi_t[f_kpi_t['Advisor Name'] == a_name], f_dsat_t[f_dsat_t['Email'].isin(team_db[team_db['Advisor Name']==a_name]['Email'])]
+        adv_n = st.sidebar.selectbox("Member", team_db[team_db['Email'].isin(emails)]['Advisor Name'])
+        f_kpi, f_dsat = f_kpi_t[f_kpi_t['Advisor Name'] == adv_n], f_dsat_t[f_dsat_t['Email'].isin(team_db[team_db['Advisor Name']==adv_n]['Email'])]
     else: f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'].isin(emails)], f_dsat_t[f_dsat_t['Email'].isin(emails)]
 else: f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'] == user['Email']], f_dsat_t[f_dsat_t['Email'] == user['Email']]
 
@@ -158,7 +152,6 @@ st.caption(f"Welcome {user['Advisor Name']} | Access: {level} | Period: {sel}")
 tab1, tab2, *tab3 = st.tabs(["Performance Hub", "DSAT Analysis"] + (["Leaderboards"] if level in ["Manager", "Admin"] else []))
 
 with tab1:
-    # 2-decimal formatting for all metrics
     avg_score = f_kpi['Shift_Score'].mean() if not f_kpi.empty else 0
     avg_ia = f_kpi['IA_Mins'].mean() if not f_kpi.empty else 0
     avg_sent = f_kpi[f_kpi['Total Survey'] > 0]['Sent Rate %'].mean() if not f_kpi.empty else 0
@@ -174,37 +167,34 @@ with tab1:
     m[3].metric("Avg Satisfied Survey", f"{avg_sat:.2f}%")
     m[4].metric("Total Survey", int(f_kpi['Total Survey'].sum()) if not f_kpi.empty else 0)
 
-    # 4-Trend Analysis
     ca, cb = st.columns(2)
     chart_d = f_kpi.groupby('Date_Parsed').mean(numeric_only=True).reset_index() if not f_kpi.empty else pd.DataFrame()
     with ca:
-        st.plotly_chart(px.line(chart_d, x='Date_Parsed', y='Shift_Score', title="Shift Score Trend", markers=True), use_container_width=True)
-        st.plotly_chart(px.line(chart_d, x='Date_Parsed', y='Satisfied Survey %', title="Satisfied Survey Trend", markers=True), use_container_width=True)
+        if not chart_d.empty: st.plotly_chart(px.line(chart_d, x='Date_Parsed', y='Shift_Score', title="Shift Score Trend", markers=True), use_container_width=True)
+        if not chart_d.empty: st.plotly_chart(px.line(chart_d, x='Date_Parsed', y='Satisfied Survey %', title="Satisfied Survey Trend", markers=True), use_container_width=True)
     with cb:
-        st.plotly_chart(px.line(chart_d, x='Date_Parsed', y='IA_Mins', title="IA Minutes Trend", markers=True), use_container_width=True)
-        st.plotly_chart(px.line(chart_d, x='Date_Parsed', y='Sent Rate %', title="Survey Sent Trend", markers=True), use_container_width=True)
+        if not chart_d.empty: st.plotly_chart(px.line(chart_d, x='Date_Parsed', y='IA_Mins', title="IA Minutes Trend", markers=True), use_container_width=True)
+        if not chart_d.empty: st.plotly_chart(px.line(chart_d, x='Date_Parsed', y='Sent Rate %', title="Survey Sent Trend", markers=True), use_container_width=True)
 
 with tab2:
     st.markdown("### 🚫 DSAT Analysis")
     s1, s2, s3 = st.columns(3)
     s1.metric("Total Received", len(f_dsat))
-    s2.metric("Controllable", len(f_dsat[f_dsat['Type'] == 'Controllable']))
-    s3.metric("Uncontrollable", len(f_dsat[f_dsat['Type'] == 'Uncontrollable']))
+    s2.metric("Controllable", len(f_dsat[f_dsat['Type'] == 'Controllable']) if 'Type' in f_dsat.columns else 0)
+    s3.metric("Uncontrollable", len(f_dsat[f_dsat['Type'] == 'Uncontrollable']) if 'Type' in f_dsat.columns else 0)
     
     if not f_dsat.empty:
         if level in ["Manager", "Admin"]: f_dsat['Update Action'] = f_dsat.apply(generate_form_url, axis=1)
-        df_v = f_dsat[['Timestamp', 'DSAT chat link', 'Feedback', 'Type'] + (['Update Action'] if level in ["Manager", "Admin"] else [])].copy()
-        df_v.rename(columns={'Timestamp': 'Date'}, inplace=True)
-        st.dataframe(df_v, column_config={
-            "DSAT chat link": st.column_config.LinkColumn("View Chat"),
-            "Update Action": st.column_config.LinkColumn("Update Feedback/Type")
-        }, hide_index=True, use_container_width=True)
-    else: st.write("No DSAT records found.")
+        t_cols = ['Timestamp', 'Advisor Name', 'DSAT chat link', 'Type', 'Feedback'] + (['Update Action'] if level in ["Manager", "Admin"] else [])
+        df_v = f_dsat[[c for c in t_cols if c in f_dsat.columns]].copy()
+        if 'Timestamp' in df_v.columns: df_v.rename(columns={'Timestamp': 'Date'}, inplace=True)
+        st.dataframe(df_v, column_config={"DSAT chat link": st.column_config.LinkColumn("View Chat"), "Update Action": st.column_config.LinkColumn("Update Form")}, hide_index=True, use_container_width=True)
+    else: st.write("No records found.")
 
 if level in ["Manager", "Admin"] and tab3:
     with tab3[0]:
         st.markdown("#### 🏆 Leaderboards")
-        st.caption("Criteria: Survey Sent Rate ≥ 85% and Satisfied Survey > 90% (Excludes 0-survey days)")
+        st.caption("Criteria: Survey Sent Rate ≥ 85% and Satisfied Survey > 90%")
         ldb = f_kpi.groupby('Advisor Name').agg({'Sent Rate %':'mean','Satisfied Survey %':'mean','Q/A Calls':'sum','OB Calls':'sum'}).reset_index()
         l1, l2, l3 = st.columns(3)
         with l1:
@@ -212,14 +202,10 @@ if level in ["Manager", "Admin"] and tab3:
             sc = ldb[(ldb['Sent Rate %'] >= 85) & (ldb['Satisfied Survey %'] > 90)].sort_values(['Satisfied Survey %','Sent Rate %'], ascending=False)
             st.dataframe(sc[['Advisor Name', 'Satisfied Survey %', 'Sent Rate %']].round(2), hide_index=True)
         with l2:
-            st.write("**Avg Satisfied Survey %**")
-            st.dataframe(ldb.sort_values('Satisfied Survey %', ascending=False)[['Advisor Name', 'Satisfied Survey %']].round(2), hide_index=True)
-            st.write("**Avg Survey Sent %**")
-            st.dataframe(ldb.sort_values('Sent Rate %', ascending=False)[['Advisor Name', 'Sent Rate %']].round(2), hide_index=True)
+            st.write("**Avg Satisfied Survey %**"); st.dataframe(ldb.sort_values('Satisfied Survey %', ascending=False)[['Advisor Name', 'Satisfied Survey %']].round(2), hide_index=True)
+            st.write("**Avg Survey Sent %**"); st.dataframe(ldb.sort_values('Sent Rate %', ascending=False)[['Advisor Name', 'Sent Rate %']].round(2), hide_index=True)
         with l3:
-            st.write("**Total QA Calls**")
-            st.dataframe(ldb.sort_values('Q/A Calls', ascending=False)[['Advisor Name', 'Q/A Calls']], hide_index=True)
-            st.write("**Total OB Calls**")
-            st.dataframe(ldb.sort_values('OB Calls', ascending=False)[['Advisor Name', 'OB Calls']], hide_index=True)
+            st.write("**Total QA Calls**"); st.dataframe(ldb.sort_values('Q/A Calls', ascending=False)[['Advisor Name', 'Q/A Calls']], hide_index=True)
+            st.write("**Total OB Calls**"); st.dataframe(ldb.sort_values('OB Calls', ascending=False)[['Advisor Name', 'OB Calls']], hide_index=True)
 
 st.sidebar.divider(); st.sidebar.button("Logout", on_click=lambda: st.session_state.update({'auth': None}))
