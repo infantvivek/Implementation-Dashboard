@@ -44,20 +44,24 @@ def parse_time_to_minutes(time_str):
     except: return 0
 
 def create_ghl_gauge(title, value, target, is_percent=True):
+    # Standardized range 0-100 for all gauges
     fig = go.Figure(go.Indicator(
         mode = "gauge+number",
         value = value,
         domain = {'x': [0, 1], 'y': [0, 1]},
-        title = {'text': title, 'font': {'size': 16}},
-        number = {'suffix': "%" if is_percent else "", 'font': {'color': '#0052FF'}},
+        title = {'text': f"<br><span style='font-size:0.8em;color:gray'>{title}</span>", 'position': 'top center'},
+        number = {'suffix': "%" if is_percent else "", 'font': {'color': '#0052FF', 'size': 30}},
         gauge = {
-            'axis': {'range': [None, 100 if is_percent else max(value*1.2, target*1.2, 10)], 'tickwidth': 1},
+            'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "gray"},
             'bar': {'color': "#0052FF"},
             'bgcolor': "rgba(0,0,0,0)",
+            'borderwidth': 2,
+            'bordercolor': "#E2E8F0",
             'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': target}
         }
     ))
-    fig.update_layout(height=200, margin=dict(l=20, r=20, t=40, b=20), paper_bgcolor='rgba(0,0,0,0)', font={'color': "gray"})
+    # Adjusted margins (t=80) to prevent heading truncation
+    fig.update_layout(height=230, margin=dict(l=30, r=30, t=80, b=20), paper_bgcolor='rgba(0,0,0,0)', font={'color': "gray"})
     return fig
 
 @st.dialog("Update DSAT Record", width="large")
@@ -127,14 +131,12 @@ else:
     sel = st.sidebar.selectbox("Select Year:", sorted(kpi_raw['Year_Label'].dropna().unique(), reverse=True))
     f_kpi_t, f_dsat_t = kpi_raw[kpi_raw['Year_Label'] == sel], dsat_raw[dsat_raw['Date_Parsed'].dt.year == sel]
 
-# --- 7. RECURSIVE HIERARCHY LOGIC (FIX FOR ZERO DATA) ---
+# Hierarchy
 level = user.get('Access Level', 'IC')
 if level == "Admin":
     sr_mgr = st.sidebar.selectbox("Sr. Manager Team", ["Entire Organization", "Jarvis Sokolowich", "Sumit Ludhwani"])
     if sr_mgr != "Entire Organization":
-        # Get all managers reporting to Sr. Mgr
         sub_managers = team_db[team_db['Manager Name'] == sr_mgr]['Advisor Name'].unique()
-        # Get all advisors reporting to those managers
         target_emails = team_db[team_db['Manager Name'].isin(sub_managers)]['Email'].unique()
         f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'].isin(target_emails)], f_dsat_t[f_dsat_t['Email'].isin(target_emails)]
     else: f_kpi, f_dsat = f_kpi_t, f_dsat_t
@@ -143,7 +145,7 @@ elif level == "Manager":
     f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'].isin(emails)], f_dsat_t[f_dsat_t['Email'].isin(emails)]
 else: f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'] == user['Email']], f_dsat_t[f_dsat_t['Email'] == user['Email']]
 
-# --- 8. UI ---
+# --- 7. UI ---
 st.title("🚀 CS PERFORMANCE HUB")
 tabs = st.tabs(["📊 Performance Overview", "🚫 DSAT Audit", "🏆 Leaderboards"])
 
@@ -155,11 +157,12 @@ with tabs[0]:
     total_ob = f_kpi['OB Calls'].sum() if not f_kpi.empty else 0
     total_qa = f_kpi['Q/A Calls'].sum() if not f_kpi.empty else 0
     
-    st.info(f"**Performance Summary:** Quality: **{avg_sat:.2f}%** | Sent Rate: **{avg_sent:.2f}%** | Shift Score: **{avg_score:.2f}%**")
+    st.info(f"**Insights:** Quality: **{avg_sat:.2f}%** | Sent Rate: **{avg_sent:.2f}%** | Shift Score: **{avg_score:.2f}%**")
     
     g1, g2, g3, g4 = st.columns(4)
-    g1.plotly_chart(create_ghl_gauge("Survey Sent", avg_sent, 85), use_container_width=True)
-    g2.plotly_chart(create_ghl_gauge("Satisfied Survey", avg_sat, 90), use_container_width=True)
+    # Standardized 0-100 Gauge Reading
+    g1.plotly_chart(create_ghl_gauge("Survey Sent %", avg_sent, 85), use_container_width=True)
+    g2.plotly_chart(create_ghl_gauge("Satisfied Survey %", avg_sat, 90), use_container_width=True)
     g3.plotly_chart(create_ghl_gauge("Total OB Calls", total_ob, 50, False), use_container_width=True)
     g4.plotly_chart(create_ghl_gauge("Total QA Calls", total_qa, 20, False), use_container_width=True)
 
@@ -190,16 +193,25 @@ with tabs[1]:
             if r[6].button("Update", key=f"btn_{row['RecordKey']}"): open_form_dialog(generate_form_url(row))
 
 with tabs[2]:
-    st.markdown("### Leaderboards")
-    ldb = f_kpi[f_kpi['Total Survey'] > 0].groupby('Advisor Name').agg({'Sent Rate %':'mean', 'Satisfied Survey %':'mean', 'Q/A Calls':'sum', 'OB Calls':'sum'}).reset_index().round(2)
-    l1, l2, l3 = st.columns(3)
-    with l1:
-        st.write("**Top Performers**")
+    st.markdown("### 🏆 Team Leaderboards")
+    ldb = f_kpi[f_kpi['Total Survey'] > 0].groupby('Advisor Name').agg({
+        'Sent Rate %':'mean', 'Satisfied Survey %':'mean', 'Q/A Calls':'sum', 'OB Calls':'sum'
+    }).reset_index().round(2)
+    
+    c_l1, c_l2, c_l3 = st.columns(3)
+    with c_l1:
+        st.write("**Success Champions**")
         sc = ldb[(ldb['Sent Rate %'] >= 85) & (ldb['Satisfied Survey %'] > 90)].sort_values('Satisfied Survey %', ascending=False)
         st.dataframe(sc[['Advisor Name', 'Satisfied Survey %', 'Sent Rate %']], hide_index=True, use_container_width=True)
-    with l2:
-        st.write("**Total QA Calls**"); st.dataframe(ldb.sort_values('Q/A Calls', ascending=False)[['Advisor Name', 'Q/A Calls']], hide_index=True, use_container_width=True)
-    with l3:
-        st.write("**Total OB Calls**"); st.dataframe(ldb.sort_values('OB Calls', ascending=False)[['Advisor Name', 'OB Calls']], hide_index=True, use_container_width=True)
+    with c_l2:
+        st.write("**Avg Satisfied Survey %**")
+        st.dataframe(ldb.sort_values('Satisfied Survey %', ascending=False)[['Advisor Name', 'Satisfied Survey %']], hide_index=True, use_container_width=True)
+        st.write("**Avg Survey Sent %**")
+        st.dataframe(ldb.sort_values('Sent Rate %', ascending=False)[['Advisor Name', 'Sent Rate %']], hide_index=True, use_container_width=True)
+    with c_l3:
+        st.write("**Total QA Calls**")
+        st.dataframe(ldb.sort_values('Q/A Calls', ascending=False)[['Advisor Name', 'Q/A Calls']], hide_index=True, use_container_width=True)
+        st.write("**Total OB Calls**")
+        st.dataframe(ldb.sort_values('OB Calls', ascending=False)[['Advisor Name', 'OB Calls']], hide_index=True, use_container_width=True)
 
 st.sidebar.divider(); st.sidebar.button("Logout", on_click=lambda: st.session_state.update({'auth': None}))
