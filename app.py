@@ -20,9 +20,10 @@ ENTRY_TYPE = "entry.3"
 
 st.set_page_config(layout="wide", page_title="HighLevel CS Performance Tracker")
 
-# --- 2. DYNAMIC THEME ---
+# --- 2. DYNAMIC THEME (GHL BRANDING) ---
 st.markdown("""
     <style>
+    .ghl-logo { display: block; margin-left: auto; margin-right: auto; width: 350px; padding: 10px; filter: drop-shadow(0px 0px 5px #0052FF); }
     [data-testid="stMetricValue"] { color: var(--text-color); }
     .stTabs [aria-selected="true"] { background-color: #0052FF !important; color: white !important; }
     div.stInfo { background-color: rgba(0, 82, 255, 0.08); border-left: 5px solid #0052FF; color: var(--text-color); border-radius: 10px; }
@@ -41,7 +42,7 @@ def parse_time_to_minutes(time_str):
         return (h * 60) + m
     except: return 0
 
-def create_ghl_gauge(title, value, target, is_percent=True, color_steps=False):
+def create_ghl_gauge(title, value, target=None, is_percent=True, color_steps=False):
     # Standardized 0-100 range
     steps = []
     if color_steps:
@@ -65,7 +66,7 @@ def create_ghl_gauge(title, value, target, is_percent=True, color_steps=False):
             'borderwidth': 1,
             'bordercolor': "#E2E8F0",
             'steps': steps,
-            'threshold': {'line': {'color': "black", 'width': 3}, 'thickness': 0.75, 'value': target}
+            'threshold': {'line': {'color': "black", 'width': 3}, 'thickness': 0.75, 'value': target} if target else None
         }
     ))
     fig.update_layout(height=240, margin=dict(l=30, r=30, t=50, b=20), paper_bgcolor='rgba(0,0,0,0)')
@@ -103,7 +104,7 @@ if 'auth' not in st.session_state: st.session_state.auth = None
 if not st.session_state.auth:
     col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
     with col_l2:
-        st.image(LOGO_URL, width=300)
+        st.image(LOGO_URL, width=350)
         st.title("PERFORMANCE HUB LOGIN")
         with st.form("login"):
             e_in, p_in = st.text_input("Work Email").lower().strip(), st.text_input("Password", type="password")
@@ -129,7 +130,7 @@ freq = st.sidebar.radio("Frequency:", ["Daily", "Weekly", "Monthly", "Yearly"], 
 
 if freq == "Daily":
     available = sorted(kpi_raw['Date_Parsed'].dropna().unique(), reverse=True)
-    sel = st.sidebar.selectbox("Date:", available, format_func=lambda x: x.strftime('%d-%m-%Y'))
+    sel = st.sidebar.selectbox("Select Date:", available, format_func=lambda x: x.strftime('%d-%m-%Y'))
     f_kpi_t, f_dsat_t = kpi_raw[kpi_raw['Date_Parsed'] == sel], dsat_raw[dsat_raw['Date_Parsed'].dt.normalize() == sel]
 elif freq == "Weekly":
     kpi_raw['W_Start'] = kpi_raw['Date_Parsed'] - pd.to_timedelta((kpi_raw['Date_Parsed'].dt.dayofweek + 1) % 7, unit='d')
@@ -144,7 +145,7 @@ else:
     sel = st.sidebar.selectbox("Year:", sorted(kpi_raw['Year_Label'].dropna().unique(), reverse=True))
     f_kpi_t, f_dsat_t = kpi_raw[kpi_raw['Year_Label'] == sel], dsat_raw[kpi_raw['Year_Label'] == sel]
 
-# Scoping Logic (Director -> Manager -> Advisor)
+# Hierarchy Filter
 if level == "Admin":
     sr_mgr = st.sidebar.selectbox("Sr. Manager Team", ["Entire Organization", "Jarvis Sokolowich", "Sumit Ludhwani"])
     if sr_mgr != "Entire Organization":
@@ -158,7 +159,7 @@ elif level == "Manager":
 else: f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'] == user['Email']], f_dsat_t[f_dsat_t['Email'] == user['Email']]
 
 # --- 8. DASHBOARD UI ---
-st.image(LOGO_URL, width=300)
+st.markdown(f'<img src="{LOGO_URL}" class="ghl-logo">', unsafe_allow_html=True)
 st.title("PERFORMANCE HUB")
 st.caption(f"Member: {user['Advisor Name']} | Period: {sel}")
 
@@ -174,14 +175,16 @@ with tabs[0]:
     
     st.info(f"Period Summary: Quality **{avg_sat:.2f}%** | Sent Rate **{avg_sent:.2f}%** | Shift Score **{avg_score:.2f}%**")
     
-    # Hero Gauges with 0-100 Range and Color Steps
-    g1, g2, g3 = st.columns(3)
-    g1.plotly_chart(create_ghl_gauge("Shift Score", avg_score, 85, color_steps=True), use_container_width=True)
-    g2.plotly_chart(create_ghl_gauge("Survey Sent %", avg_sent, 85, color_steps=True), use_container_width=True)
-    g3.plotly_chart(create_ghl_gauge("Satisfied Survey %", avg_sat, 90, color_steps=True), use_container_width=True)
+    # Hero Gauges
+    g_col1, g_col2, g_col3 = st.columns(3)
+    g_col1.plotly_chart(create_ghl_gauge("Shift Score", avg_score, 85, color_steps=True), use_container_width=True)
+    g_col2.plotly_chart(create_ghl_gauge("Survey Sent %", avg_sent, 85, color_steps=True), use_container_width=True)
+    g_col3.plotly_chart(create_ghl_gauge("Satisfied Survey %", avg_sat, 90, color_steps=True), use_container_width=True)
 
-    c1, c2 = st.columns(2)
-    c1.metric("Total OB Calls", int(total_ob)); c2.metric("Total QA Calls", int(total_qa))
+    # Volume Gauges (No targets, standardized range 0-100)
+    g_col4, g_col5 = st.columns(2)
+    g_col4.plotly_chart(create_ghl_gauge("Total OB Calls", min(total_ob, 100), is_percent=False), use_container_width=True)
+    g_col5.plotly_chart(create_ghl_gauge("Total QA Calls", min(total_qa, 100), is_percent=False), use_container_width=True)
 
     trend_data = f_kpi.groupby('Date_Parsed').mean(numeric_only=True).reset_index()
     t1, t2 = st.columns(2)
