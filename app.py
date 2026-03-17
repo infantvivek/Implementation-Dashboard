@@ -20,14 +20,12 @@ ENTRY_TYPE = "entry.3"
 
 st.set_page_config(layout="wide", page_title="HighLevel CS Performance Tracker")
 
-# --- 2. DYNAMIC GHL THEME ---
+# --- 2. DYNAMIC GHL THEME (AUTO LIGHT/DARK) ---
 st.markdown("""
     <style>
     .stMetric { 
         background-color: var(--secondary-background-color); 
-        padding: 20px; 
-        border-radius: 12px; 
-        border-left: 5px solid #0052FF; 
+        padding: 20px; border-radius: 12px; border-left: 5px solid #0052FF; 
         box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); 
     }
     [data-testid="stMetricValue"] { color: var(--text-color); font-weight: 700; }
@@ -35,10 +33,7 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] { gap: 10px; }
     .stTabs [data-baseweb="tab"] { 
         background-color: var(--secondary-background-color); 
-        border-radius: 8px 8px 0 0; 
-        color: var(--text-color);
-        padding: 12px 24px;
-        font-weight: 600;
+        border-radius: 8px 8px 0 0; color: var(--text-color); padding: 12px 24px; font-weight: 600;
     }
     .stTabs [aria-selected="true"] { background-color: #0052FF !important; color: white !important; }
     div.stInfo { background-color: rgba(0, 82, 255, 0.08); border-left: 5px solid #0052FF; color: var(--text-color); border-radius: 10px; }
@@ -58,24 +53,29 @@ def parse_time_to_minutes(time_str):
         return (h * 60) + m
     except: return 0
 
-def format_minutes_to_hours(total_minutes):
-    if pd.isna(total_minutes) or total_minutes <= 0: return "0h 0m"
-    return f"{int(total_minutes // 60)}h {int(total_minutes % 60)}m"
-
-def generate_form_url(row):
-    base = f"https://docs.google.com/forms/d/e/{FORM_ID}/viewform?embedded=true&usp=pp_url"
-    params = {
-        ENTRY_KEY: row.get('RecordKey',''), 
-        ENTRY_FEEDBACK: row.get('Feedback','') if pd.notna(row.get('Feedback')) else '', 
-        ENTRY_TYPE: row.get('Type','') if pd.notna(row.get('Type')) else ''
-    }
-    return f"{base}&{urllib.parse.urlencode(params)}"
+def create_ghl_gauge(title, value, target, is_percent=True):
+    fig = go.Figure(go.Indicator(
+        mode = "gauge+number",
+        value = value,
+        domain = {'x': [0, 1], 'y': [0, 1]},
+        title = {'text': title, 'font': {'size': 16}},
+        number = {'suffix': "%" if is_percent else "", 'font': {'color': '#0052FF'}},
+        gauge = {
+            'axis': {'range': [None, 100 if is_percent else max(value*1.2, target*1.2, 10)], 'tickwidth': 1},
+            'bar': {'color': "#0052FF"},
+            'bgcolor': "rgba(0,0,0,0)",
+            'borderwidth': 2,
+            'bordercolor': "#E2E8F0",
+            'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': target}
+        }
+    ))
+    fig.update_layout(height=220, margin=dict(l=20, r=20, t=40, b=20), paper_bgcolor='rgba(0,0,0,0)', font={'color': "gray"})
+    return fig
 
 @st.dialog("Update DSAT Record", width="large")
 def open_form_dialog(url):
     iframe(url, height=700, scrolling=True)
-    if st.button("Close & Sync Dashboard"):
-        st.rerun()
+    if st.button("Close & Sync Dashboard"): st.rerun()
 
 # --- 4. DATA LOADING ---
 @st.cache_data(ttl=60)
@@ -100,10 +100,10 @@ def load_data(url, sheet_type=None):
     except Exception as e:
         st.error(f"Error loading {sheet_type}: {e}"); return pd.DataFrame()
 
-# --- 5. AUTHENTICATION ---
+# --- 5. AUTH ---
 if 'auth' not in st.session_state: st.session_state.auth = None
 if not st.session_state.auth:
-    col1, col2 = st.columns([1, 5]); col1.image(LOGO_URL, width=100); col2.title("HIGHLEVEL PERFORMANCE HUB")
+    c1, c2 = st.columns([1, 5]); c1.image(LOGO_URL, width=100); c2.title("HIGHLEVEL PERFORMANCE HUB")
     with st.form("login"):
         e_in, p_in = st.text_input("Work Email").lower().strip(), st.text_input("Password", type="password")
         if st.form_submit_button("Sign In"):
@@ -122,10 +122,11 @@ dsat_raw['Date_Parsed'] = pd.to_datetime(dsat_raw['Timestamp'], errors='coerce')
 if 'Processed' in dsat_raw.columns: dsat_raw = dsat_raw[dsat_raw['Processed'] != 'DUPLICATE']
 if 'Advisor Name' not in dsat_raw.columns: dsat_raw = dsat_raw.merge(team_db[['Email', 'Advisor Name', 'Manager Name']], on='Email', how='left')
 
-# --- 7. FILTERS ---
+# --- 7. HIERARCHY FILTERS (FIX FOR ZERO DATA) ---
 st.sidebar.image(LOGO_URL, width=100)
-freq = st.sidebar.radio("View Frequency:", ["Daily", "Weekly", "Monthly", "Yearly"], horizontal=True)
+freq = st.sidebar.radio("Frequency:", ["Daily", "Weekly", "Monthly", "Yearly"], horizontal=True)
 
+# Time logic
 if freq == "Daily":
     available = sorted(kpi_raw['Date_Parsed'].dropna().unique(), reverse=True)
     sel = st.sidebar.selectbox("Select Date:", available, format_func=lambda x: x.strftime('%d-%m-%Y'))
@@ -143,12 +144,12 @@ else:
     sel = st.sidebar.selectbox("Select Year:", sorted(kpi_raw['Year_Label'].dropna().unique(), reverse=True))
     f_kpi_t, f_dsat_t = kpi_raw[kpi_raw['Year_Label'] == sel], dsat_raw[dsat_raw['Date_Parsed'].dt.year == sel]
 
-# Hierarchy
+# Hierarchy logic
 if level == "Admin":
     sr_mgr = st.sidebar.selectbox("Sr. Manager Team", ["Entire Organization", "Jarvis Sokolowich", "Sumit Ludhwani"])
     if sr_mgr != "Entire Organization":
-        m_list = team_db[team_db['Manager Name'] == sr_mgr]['Advisor Name'].unique()
-        m_filter = st.sidebar.selectbox(f"Managers under {sr_mgr}", ["All"] + list(m_list))
+        managers = team_db[team_db['Manager Name'] == sr_mgr]['Advisor Name'].unique()
+        m_filter = st.sidebar.selectbox(f"Managers under {sr_mgr}", ["All"] + list(managers))
         target_emails = team_db[team_db['Manager Name'] == (sr_mgr if m_filter == "All" else m_filter)]['Email'].unique()
         f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'].isin(target_emails)], f_dsat_t[f_dsat_t['Email'].isin(target_emails)]
     else: f_kpi, f_dsat = f_kpi_t, f_dsat_t
@@ -161,50 +162,24 @@ else: f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'] == user['Email']], f_dsat_t[f_dsa
 st.title("🚀 CS PERFORMANCE HUB")
 st.caption(f"Member: {user['Advisor Name']} | Access: {level} | Period: {sel}")
 
-tabs = st.tabs(["📊 Performance Hub", "🚫 DSAT Audit"] + (["🏆 Team Leaderboards"] if level in ["Manager", "Admin"] else []))
+tabs = st.tabs(["📈 Performance Hub", "🚫 DSAT Audit"] + (["🏆 Team Leaderboards"] if level in ["Manager", "Admin"] else []))
 
 with tabs[0]:
     active_kpi = f_kpi[f_kpi['IA_Mins'] > 0]
     avg_score = active_kpi['Shift_Score'].mean() if not active_kpi.empty else 0
     avg_sent = f_kpi[f_kpi['Total Survey'] > 0]['Sent Rate %'].mean() if not f_kpi.empty else 0
     avg_sat = f_kpi[f_kpi['Total Survey'] > 0]['Satisfied Survey %'].mean() if not f_kpi.empty else 0
+    total_ob = f_kpi['OB Calls'].sum() if not f_kpi.empty else 0
+    total_qa = f_kpi['Q/A Calls'].sum() if not f_kpi.empty else 0
     
     st.info(f"**Period Insights:** Quality: **{avg_sat:.2f}%** | Sent Rate: **{avg_sent:.2f}%** | Shift Score: **{avg_score:.2f}%**")
     
-    # NEW GHL GOAL GAUGE
-    col_g1, col_g2 = st.columns([1, 2])
-    with col_g1:
-        fig_gauge = go.Figure(go.Indicator(
-            mode = "gauge+number",
-            value = avg_sat,
-            domain = {'x': [0, 1], 'y': [0, 1]},
-            title = {'text': "Satisfaction Target", 'font': {'size': 18}},
-            number = {'suffix': "%", 'font': {'color': '#0052FF'}},
-            gauge = {
-                'axis': {'range': [None, 100], 'tickwidth': 1, 'tickcolor': "gray"},
-                'bar': {'color': "#0052FF"},
-                'bgcolor': "white",
-                'borderwidth': 2,
-                'bordercolor': "#E2E8F0",
-                'threshold': {
-                    'line': {'color': "red", 'width': 4},
-                    'thickness': 0.75,
-                    'value': 90
-                }
-            }
-        ))
-        fig_gauge.update_layout(height=280, margin=dict(l=20, r=20, t=50, b=20), paper_bgcolor='rgba(0,0,0,0)', font={'color': "gray"})
-        st.plotly_chart(fig_gauge, use_container_width=True)
-
-    with col_g2:
-        st.write("") # Spacer
-        st.write("")
-        m = st.columns(2)
-        m[0].metric("Avg Shift Score", f"{avg_score:.2f}%")
-        m[1].metric("Avg Sent Rate", f"{avg_sent:.2f}%")
-        m = st.columns(2)
-        m[0].metric("Avg Satisfied Survey", f"{avg_sat:.2f}%")
-        m[1].metric("Total Survey", int(f_kpi['Total Survey'].sum()))
+    # FOUR GAUGE CHARTS
+    g1, g2, g3, g4 = st.columns(4)
+    g1.plotly_chart(create_ghl_gauge("Survey Sent", avg_sent, 85), use_container_width=True)
+    g2.plotly_chart(create_ghl_gauge("Satisfied Survey", avg_sat, 90), use_container_width=True)
+    g3.plotly_chart(create_ghl_gauge("Total OB Calls", total_ob, 50, False), use_container_width=True)
+    g4.plotly_chart(create_ghl_gauge("Total QA Calls", total_qa, 20, False), use_container_width=True)
 
     st.markdown("### Performance Trends")
     trend_data = f_kpi.groupby('Date_Parsed').mean(numeric_only=True).reset_index()
@@ -229,7 +204,6 @@ with tabs[1]:
         h = st.columns(col_w)
         headers = ["Date", "Advisor", "Manager", "Link", "Type", "Feedback", "Action"]
         for i, header in enumerate(headers): h[i].write(f"**{header}**")
-
         for _, row in f_dsat.iterrows():
             fb = row['Feedback'] if pd.notna(row['Feedback']) and str(row['Feedback']).strip() != "" else "-"
             tp = row['Type'] if pd.notna(row['Type']) and str(row['Type']).strip() != "" else "-"
@@ -242,11 +216,9 @@ with tabs[1]:
 if level in ["Manager", "Admin"] and len(tabs) > 2:
     with tabs[2]:
         st.markdown("### Success Champions")
-        st.caption("Criteria: Survey Sent Rate ≥ 85% and Satisfied Survey > 90%")
         ldb = f_kpi[f_kpi['Total Survey'] > 0].groupby('Advisor Name').agg({
             'Sent Rate %':'mean', 'Satisfied Survey %':'mean', 'Q/A Calls':'sum', 'OB Calls':'sum'
         }).reset_index().round(2)
-        
         l1, l2, l3 = st.columns(3)
         with l1:
             st.write("**Top Performers**")
