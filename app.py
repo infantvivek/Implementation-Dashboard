@@ -20,7 +20,7 @@ ENTRY_TYPE = "entry.3"
 
 st.set_page_config(layout="wide", page_title="HighLevel CS Performance Tracker")
 
-# --- 2. DYNAMIC THEME ---
+# --- 2. DYNAMIC THEME (GHL BRANDING) ---
 st.markdown("""
     <style>
     .stMetric { background-color: var(--secondary-background-color); padding: 20px; border-radius: 12px; border-left: 5px solid #0052FF; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
@@ -43,14 +43,18 @@ def parse_time_to_minutes(time_str):
         return (h * 60) + m
     except: return 0
 
+def format_minutes_to_hours(total_minutes):
+    if pd.isna(total_minutes) or total_minutes <= 0: return "0h 0m"
+    return f"{int(total_minutes // 60)}h {int(total_minutes % 60)}m"
+
 def create_ghl_gauge(title, value, target, is_percent=True):
-    # Standardized range 0-100 for all gauges
+    # FIXED: Cleaned up the title configuration to prevent ValueError
     fig = go.Figure(go.Indicator(
         mode = "gauge+number",
         value = value,
         domain = {'x': [0, 1], 'y': [0, 1]},
-        title = {'text': f"<br><span style='font-size:0.8em;color:gray'>{title}</span>", 'position': 'top center'},
-        number = {'suffix': "%" if is_percent else "", 'font': {'color': '#0052FF', 'size': 30}},
+        title = {'text': title, 'font': {'size': 16, 'color': 'gray'}},
+        number = {'suffix': "%" if is_percent else "", 'font': {'color': '#0052FF', 'size': 35}},
         gauge = {
             'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "gray"},
             'bar': {'color': "#0052FF"},
@@ -60,8 +64,8 @@ def create_ghl_gauge(title, value, target, is_percent=True):
             'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': target}
         }
     ))
-    # Adjusted margins (t=80) to prevent heading truncation
-    fig.update_layout(height=230, margin=dict(l=30, r=30, t=80, b=20), paper_bgcolor='rgba(0,0,0,0)', font={'color': "gray"})
+    # Standardized margins and heights to prevent truncation
+    fig.update_layout(height=250, margin=dict(l=30, r=30, t=50, b=20), paper_bgcolor='rgba(0,0,0,0)')
     return fig
 
 @st.dialog("Update DSAT Record", width="large")
@@ -112,7 +116,7 @@ if 'Advisor Name' not in dsat_raw.columns: dsat_raw = dsat_raw.merge(team_db[['E
 
 # --- 6. FILTERS ---
 st.sidebar.image(LOGO_URL, width=100)
-freq = st.sidebar.radio("Frequency:", ["Daily", "Weekly", "Monthly", "Yearly"], horizontal=True)
+freq = st.sidebar.radio("View Frequency:", ["Daily", "Weekly", "Monthly", "Yearly"], horizontal=True)
 
 if freq == "Daily":
     available = sorted(kpi_raw['Date_Parsed'].dropna().unique(), reverse=True)
@@ -120,7 +124,7 @@ if freq == "Daily":
     f_kpi_t, f_dsat_t = kpi_raw[kpi_raw['Date_Parsed'] == sel], dsat_raw[dsat_raw['Date_Parsed'].dt.normalize() == sel]
 elif freq == "Weekly":
     kpi_raw['W_Start'] = kpi_raw['Date_Parsed'] - pd.to_timedelta((kpi_raw['Date_Parsed'].dt.dayofweek + 1) % 7, unit='d')
-    sel = st.sidebar.selectbox("Select Week Starting:", sorted(kpi_raw['W_Start'].dropna().unique(), reverse=True), format_func=lambda x: x.strftime('%d-%m-%Y'))
+    sel = st.sidebar.selectbox("Week Starting:", sorted(kpi_raw['W_Start'].dropna().unique(), reverse=True), format_func=lambda x: x.strftime('%d-%m-%Y'))
     f_kpi_t, f_dsat_t = kpi_raw[kpi_raw['W_Start'] == sel], dsat_raw[(dsat_raw['Date_Parsed'] >= sel) & (dsat_raw['Date_Parsed'] < sel + pd.Timedelta(days=7))]
 elif freq == "Monthly":
     kpi_raw['Month_Label'] = kpi_raw['Date_Parsed'].dt.strftime('%B %Y')
@@ -131,21 +135,21 @@ else:
     sel = st.sidebar.selectbox("Select Year:", sorted(kpi_raw['Year_Label'].dropna().unique(), reverse=True))
     f_kpi_t, f_dsat_t = kpi_raw[kpi_raw['Year_Label'] == sel], dsat_raw[dsat_raw['Date_Parsed'].dt.year == sel]
 
-# Hierarchy
+# Hierarchy Filter (Director -> Manager -> Advisor)
 level = user.get('Access Level', 'IC')
 if level == "Admin":
     sr_mgr = st.sidebar.selectbox("Sr. Manager Team", ["Entire Organization", "Jarvis Sokolowich", "Sumit Ludhwani"])
     if sr_mgr != "Entire Organization":
-        sub_managers = team_db[team_db['Manager Name'] == sr_mgr]['Advisor Name'].unique()
-        target_emails = team_db[team_db['Manager Name'].isin(sub_managers)]['Email'].unique()
+        m_list = team_db[team_db['Manager Name'] == sr_mgr]['Advisor Name'].unique()
+        target_emails = team_db[team_db['Manager Name'].isin(m_list)]['Email'].unique()
         f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'].isin(target_emails)], f_dsat_t[f_dsat_t['Email'].isin(target_emails)]
     else: f_kpi, f_dsat = f_kpi_t, f_dsat_t
 elif level == "Manager":
-    emails = team_db[team_db['Manager Name'] == user['Advisor Name']]['Email'].unique()
-    f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'].isin(emails)], f_dsat_t[f_dsat_t['Email'].isin(emails)]
+    target_emails = team_db[team_db['Manager Name'] == user['Advisor Name']]['Email'].unique()
+    f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'].isin(target_emails)], f_dsat_t[f_dsat_t['Email'].isin(target_emails)]
 else: f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'] == user['Email']], f_dsat_t[f_dsat_t['Email'] == user['Email']]
 
-# --- 7. UI ---
+# --- 7. DASHBOARD UI ---
 st.title("🚀 CS PERFORMANCE HUB")
 tabs = st.tabs(["📊 Performance Overview", "🚫 DSAT Audit", "🏆 Leaderboards"])
 
@@ -159,13 +163,14 @@ with tabs[0]:
     
     st.info(f"**Insights:** Quality: **{avg_sat:.2f}%** | Sent Rate: **{avg_sent:.2f}%** | Shift Score: **{avg_score:.2f}%**")
     
+    # FOUR GAUGES (0-100 range)
     g1, g2, g3, g4 = st.columns(4)
-    # Standardized 0-100 Gauge Reading
     g1.plotly_chart(create_ghl_gauge("Survey Sent %", avg_sent, 85), use_container_width=True)
     g2.plotly_chart(create_ghl_gauge("Satisfied Survey %", avg_sat, 90), use_container_width=True)
     g3.plotly_chart(create_ghl_gauge("Total OB Calls", total_ob, 50, False), use_container_width=True)
     g4.plotly_chart(create_ghl_gauge("Total QA Calls", total_qa, 20, False), use_container_width=True)
 
+    st.markdown("### Performance Trends")
     trend_data = f_kpi.groupby('Date_Parsed').mean(numeric_only=True).reset_index()
     c1, c2 = st.columns(2)
     with c1:
@@ -182,8 +187,12 @@ with tabs[1]:
     s1.metric("Total DSATs", len(f_dsat)); s2.metric("Feedback Pending", pending, delta=f"{pending} Unactioned", delta_color="inverse")
     s3.metric("Controllable", len(f_dsat[f_dsat['Type'] == 'Controllable'])); s4.metric("Uncontrollable", len(f_dsat[f_dsat['Type'] == 'Uncontrollable']))
     
+    st.write("---")
     if not f_dsat.empty:
         col_w = [1.5, 2, 2, 1, 1.2, 3, 1]
+        h = st.columns(col_w)
+        headers = ["Date", "Advisor", "Manager", "Link", "Type", "Feedback", "Action"]
+        for i, header in enumerate(headers): h[i].write(f"**{header}**")
         for _, row in f_dsat.iterrows():
             fb = row['Feedback'] if pd.notna(row['Feedback']) and str(row['Feedback']).strip() != "" else "-"
             tp = row['Type'] if pd.notna(row['Type']) and str(row['Type']).strip() != "" else "-"
@@ -194,6 +203,7 @@ with tabs[1]:
 
 with tabs[2]:
     st.markdown("### 🏆 Team Leaderboards")
+    st.caption("Criteria: Survey Sent Rate ≥ 85% and Satisfied Survey > 90% (Excluding 0-survey days)")
     ldb = f_kpi[f_kpi['Total Survey'] > 0].groupby('Advisor Name').agg({
         'Sent Rate %':'mean', 'Satisfied Survey %':'mean', 'Q/A Calls':'sum', 'OB Calls':'sum'
     }).reset_index().round(2)
