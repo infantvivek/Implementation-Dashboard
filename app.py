@@ -11,9 +11,9 @@ LOGO_URL = "https://s3.amazonaws.com/cdn.freshdesk.com/data/helpdesk/attachments
 
 # PRE-FILLED FORM CONFIG
 FORM_ID = "YOUR_FORM_ID"
-ENTRY_KEY = "entry.1"      # RecordKey field ID
-ENTRY_FEEDBACK = "entry.2" # Feedback field ID
-ENTRY_TYPE = "entry.3"     # Type field ID (Controllable/Uncontrollable)
+ENTRY_KEY = "entry.1"
+ENTRY_FEEDBACK = "entry.2"
+ENTRY_TYPE = "entry.3"
 
 st.set_page_config(layout="wide", page_title="HighLevel CS Performance Tracker")
 
@@ -37,12 +37,12 @@ def generate_form_url(row):
     base = f"https://docs.google.com/forms/d/e/{FORM_ID}/viewform?usp=pp_url"
     params = {
         ENTRY_KEY: row.get('RecordKey',''), 
-        ENTRY_FEEDBACK: row.get('Feedback',''), 
-        ENTRY_TYPE: row.get('Type','')
+        ENTRY_FEEDBACK: row.get('Feedback','') if pd.notna(row.get('Feedback')) else '', 
+        ENTRY_TYPE: row.get('Type','') if pd.notna(row.get('Type')) else ''
     }
     return f"{base}&{urllib.parse.urlencode(params)}"
 
-# --- 3. ROBUST DATA LOADING & MAPPING ---
+# --- 3. DATA LOADING ---
 @st.cache_data(ttl=60)
 def load_data(url, sheet_type=None):
     try:
@@ -101,7 +101,6 @@ dsat_raw['Date_Parsed'] = pd.to_datetime(dsat_raw['Timestamp'], errors='coerce')
 if 'Processed' in dsat_raw.columns:
     dsat_raw = dsat_raw[dsat_raw['Processed'] != 'DUPLICATE']
 
-# RECOVER ADVISOR NAME IF MISSING IN DSAT
 if 'Advisor Name' not in dsat_raw.columns:
     dsat_raw = dsat_raw.merge(team_db[['Email', 'Advisor Name']], on='Email', how='left')
 
@@ -135,21 +134,18 @@ if level == "Admin":
         f_kpi, f_dsat = f_kpi_t[f_kpi_t['Advisor Name'] == adv_n], f_dsat_t[f_dsat_t['Email'].isin(team_db[team_db['Advisor Name']==adv_n]['Email'])]
 elif level == "Manager":
     emails = team_db[team_db['Manager Name'] == user['Advisor Name']]['Email'].unique()
-    sub = st.sidebar.radio("View", ["Team Summary", "Drill-down"])
-    if sub == "Drill-down":
+    sub = st.sidebar.radio("View", ["Team Summary", "Advisor Drill-down"])
+    if sub == "Advisor Drill-down":
         adv_n = st.sidebar.selectbox("Member", team_db[team_db['Email'].isin(emails)]['Advisor Name'])
         f_kpi, f_dsat = f_kpi_t[f_kpi_t['Advisor Name'] == adv_n], f_dsat_t[f_dsat_t['Email'].isin(team_db[team_db['Advisor Name']==adv_n]['Email'])]
     else: f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'].isin(emails)], f_dsat_t[f_dsat_t['Email'].isin(emails)]
 else: f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'] == user['Email']], f_dsat_t[f_dsat_t['Email'] == user['Email']]
 
-# --- 8. UI HEADER ---
+# --- 8. DASHBOARD UI ---
 head1, head2 = st.columns([1, 6]); head1.image(LOGO_URL, width=80); head2.header("HIGHLEVEL CS PERFORMANCE TRACKER")
 st.caption(f"Welcome {user['Advisor Name']} | Access: {level} | Period: {sel}")
 
-# --- 9. TABS ---
-tab_names = ["Performance Hub", "DSAT Analysis"]
-if level in ["Manager", "Admin"]: tab_names.append("Leaderboards")
-tabs = st.tabs(tab_names)
+tabs = st.tabs(["Performance Hub", "DSAT Analysis"] + (["Leaderboards"] if level in ["Manager", "Admin"] else []))
 
 with tabs[0]:
     avg_score = f_kpi['Shift_Score'].mean() if not f_kpi.empty else 0
@@ -187,29 +183,33 @@ with tabs[1]:
     st.write("---")
     if not f_dsat.empty:
         # Table Header
-        h_cols = st.columns([2, 2, 4, 2, 2])
+        h_cols = st.columns([2, 1.5, 3.5, 1.5, 1.5])
         h_cols[0].write("**Date**")
-        h_cols[1].write("**Chat Link**")
+        h_cols[1].write("**Link**")
         h_cols[2].write("**Feedback**")
         h_cols[3].write("**Type**")
         if level in ["Manager", "Admin"]:
             h_cols[4].write("**Action**")
 
         for _, row in f_dsat.iterrows():
-            r_cols = st.columns([2, 2, 4, 2, 2])
-            r_cols[0].write(str(row['Timestamp'])[:16])
-            r_cols[1].markdown(f"[View Chat]({row['DSAT chat link']})")
-            r_cols[2].write(row['Feedback'])
-            r_cols[3].write(row['Type'])
+            # Clean display values for blank fields
+            fb = row['Feedback'] if pd.notna(row['Feedback']) and str(row['Feedback']).strip() != "" else "-"
+            tp = row['Type'] if pd.notna(row['Type']) and str(row['Type']).strip() != "" else "-"
+            
+            r_cols = st.columns([2, 1.5, 3.5, 1.5, 1.5])
+            r_cols[0].write(str(row['Timestamp'])[:10])
+            r_cols[1].markdown(f"[Chat URL]({row['DSAT chat link']})")
+            r_cols[2].write(fb)
+            r_cols[3].write(tp)
             if level in ["Manager", "Admin"]:
-                r_cols[4].link_button("Feedback", generate_form_url(row), use_container_width=True)
+                r_cols[4].link_button("Update", generate_form_url(row), use_container_width=True)
     else:
         st.write("No DSAT records found.")
 
 if level in ["Manager", "Admin"] and len(tabs) > 2:
     with tabs[2]:
         st.markdown("#### 🏆 Leaderboards")
-        st.caption("Criteria: Survey Sent Rate ≥ 85% and Satisfied Survey > 90% (Excludes 0-survey days)")
+        st.caption("Criteria: Survey Sent Rate ≥ 85% and Satisfied Survey > 90%")
         ldb = f_kpi[f_kpi['Total Survey'] > 0].groupby('Advisor Name').agg({'Sent Rate %':'mean','Satisfied Survey %':'mean'}).reset_index()
         ldb_vol = f_kpi.groupby('Advisor Name').agg({'Q/A Calls':'sum','OB Calls':'sum'}).reset_index()
         
