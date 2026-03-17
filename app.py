@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
 import urllib.parse
 import re
 from streamlit.components.v1 import iframe
@@ -28,23 +29,19 @@ st.markdown("""
     
     :root { --ghl-blue: #0052FF; }
 
-    /* Standard App Metrics */
     .stMetric { background-color: var(--secondary-background-color); padding: 20px; border-radius: 12px; border: 1px solid rgba(0, 82, 255, 0.1); box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05); }
-    
-    /* GHL Sidebar Branding - Adaptive to Light/Dark Mode */
     [data-testid="stSidebarNav"]::before {
         content: ""; display: block; background-image: url('""" + LOGO_URL + """');
         background-size: contain; background-repeat: no-repeat;
         width: 170px; height: 50px; margin: 25px 0 10px 25px; filter: brightness(0) invert(1); 
     }
     
-    /* Tabs Styling */
     .stTabs [aria-selected="true"] { background-color: var(--ghl-blue) !important; color: white !important; border-radius: 8px; }
     div.stInfo { background-color: rgba(0, 82, 255, 0.05); border-left: 5px solid #0052FF; color: var(--text-color); border-radius: 10px; padding: 15px; }
     </style>
 """, unsafe_allow_html=True)
 
-# --- 3. ROBUST DATA PROCESSING ENGINE ---
+# --- 3. BULLETPROOF DATA ENGINE ---
 def parse_duration(time_str):
     if pd.isna(time_str) or not isinstance(time_str, str): return 0
     try:
@@ -70,37 +67,44 @@ def load_and_standardize(url, sheet_type):
             "totalsurvey": "surveys", "timestamp": "ts_raw", "processed": "date_raw", "chatdsaturl": "link", "datelevelas": "date_raw"
         }
         df = df.rename(columns=rmap)
-        if 'email' in df.columns: df['email'] = df['email'].astype(str).str.strip().str.lower()
+        
+        # Ensure Critical Columns Exist to Prevent KeyErrors later
+        if 'email' not in df.columns: df['email'] = ""
+        df['email'] = df['email'].astype(str).str.strip().str.lower()
         
         if sheet_type == "KPI":
-            # FIX: We NO LONGER fillna(0). Blanks stay NaN so .mean() calculations ignore them perfectly.
+            for col in ['sent_rate', 'sat_rate', 'ob', 'qa', 'surveys', 'name', 'mgr']:
+                if col not in df.columns: df[col] = np.nan
+                
             for col in ['sent_rate', 'sat_rate']:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', ''), errors='coerce')
-                    if df[col].max() <= 1.1: df[col] = df[col] * 100
+                df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', ''), errors='coerce')
+                if df[col].max() <= 1.1: df[col] = df[col] * 100
             
-            df['date_dt'] = pd.to_datetime(df['date_raw'], format="%b'%d'%y", errors='coerce')
+            df['date_dt'] = pd.to_datetime(df['date_raw'], format="%b'%d'%y", errors='coerce') if 'date_raw' in df.columns else pd.NaT
             df['ia_min'] = df['ia_raw'].apply(parse_duration) if 'ia_raw' in df.columns else 0
             df['call_min'] = df['call_raw'].apply(parse_duration) if 'call_raw' in df.columns else 0
-            
-            # FIX: If IA is 0, shift score is NaN (blank), preventing 0s from skewing the true average.
             df['shift_score'] = np.where(df['ia_min'] > 0, (df['call_min']/df['ia_min']*100), np.nan)
         
         if sheet_type == "DSAT":
-            df['date_dt'] = pd.to_datetime(df['date_raw'] if 'date_raw' in df.columns else df['ts_raw'], errors='coerce')
+            if 'date_raw' in df.columns: df['date_dt'] = pd.to_datetime(df['date_raw'], errors='coerce')
+            elif 'ts_raw' in df.columns: df['date_dt'] = pd.to_datetime(df['ts_raw'], errors='coerce')
+            else: df['date_dt'] = pd.NaT
+            for col in ['type', 'feedback', 'link']:
+                if col not in df.columns: df[col] = "-"
             
         return df
     except Exception as e:
-        return pd.DataFrame()
+        # Fallback DataFrames with correct structural columns to prevent KeyErrors
+        if sheet_type == "KPI": return pd.DataFrame(columns=['email', 'date_dt', 'shift_score', 'sent_rate', 'sat_rate', 'ob', 'qa', 'surveys', 'name', 'mgr'])
+        if sheet_type == "DSAT": return pd.DataFrame(columns=['email', 'date_dt', 'type', 'feedback', 'link'])
+        return pd.DataFrame(columns=['email', 'name', 'mgr', 'pass', 'level'])
 
 def create_metric_card(title, value, target=None, is_percent=True):
-    # Dynamic Colors: Green, Yellow, Red
     if target:
         if value >= target: color = "#22C55E" # Green
         elif value >= target - 15: color = "#F59E0B" # Yellow
         else: color = "#EF4444" # Red
-    else:
-        color = "#0052FF" # Default HighLevel Blue
+    else: color = "#0052FF" # Default Blue
 
     val_str = f"{value:.2f}%" if is_percent else f"{int(value):,}"
     target_str = f"Target: {target}{'%' if is_percent else ''}" if target else "Activity Metric"
@@ -116,15 +120,13 @@ def create_metric_card(title, value, target=None, is_percent=True):
 
 @st.dialog("Update Feedback & Type", width="large")
 def open_form_dialog(row):
-    fb = row.get('feedback', '')
-    tp = row.get('type', '')
+    fb, tp = row.get('feedback', ''), row.get('type', '')
     params = {
         ENTRY_KEY: row.get('link', ''),
         ENTRY_FEEDBACK: fb if str(fb) != "nan" and fb != "-" else "",
         ENTRY_TYPE: tp if str(tp) != "nan" and tp != "-" else ""
     }
     url = f"https://docs.google.com/forms/d/e/{FORM_ID}/viewform?usp=pp_url&{urllib.parse.urlencode(params)}"
-    
     st.markdown("### Update Data Repository")
     st.caption("Submit updates below to push them directly to the Google Sheet backend.")
     iframe(url, height=550, scrolling=True)
@@ -156,27 +158,36 @@ dsat_raw = load_and_standardize(DSAT_URL, "DSAT")
 st.sidebar.title("Navigation Filters")
 freq = st.sidebar.radio("Frequency", ["Daily", "Weekly", "Monthly", "Yearly"], horizontal=True)
 
+# Safe Time Range Selection
 if not kpi_raw.empty:
     if freq == "Daily":
         available = sorted(kpi_raw['date_dt'].dropna().unique(), reverse=True)
-        sel = st.sidebar.selectbox("Select Date", available, format_func=lambda x: x.strftime('%d-%m-%Y'))
-        k_f = kpi_raw[kpi_raw['date_dt'] == sel]
-        d_f = dsat_raw[dsat_raw['date_dt'].dt.date == sel.date()] if not dsat_raw.empty else dsat_raw
+        if available:
+            sel = st.sidebar.selectbox("Select Date", available, format_func=lambda x: x.strftime('%d-%m-%Y'))
+            k_f = kpi_raw[kpi_raw['date_dt'] == sel]
+            d_f = dsat_raw[dsat_raw['date_dt'].dt.date == sel.date()] if not dsat_raw.empty else dsat_raw.copy()
+        else: k_f, d_f = kpi_raw.copy(), dsat_raw.copy()
+        
     elif freq == "Weekly":
         kpi_raw['wk'] = kpi_raw['date_dt'].dt.to_period('W').apply(lambda r: r.start_time)
         available = sorted(kpi_raw['wk'].dropna().unique(), reverse=True)
-        sel = st.sidebar.selectbox("Select Week", available, format_func=lambda x: x.strftime('%d-%m-%Y'))
-        k_f = kpi_raw[kpi_raw['wk'] == sel]
-        d_f = dsat_raw[(dsat_raw['date_dt'] >= sel) & (dsat_raw['date_dt'] < sel + pd.Timedelta(days=7))] if not dsat_raw.empty else dsat_raw
+        if available:
+            sel = st.sidebar.selectbox("Select Week", available, format_func=lambda x: x.strftime('%d-%m-%Y'))
+            k_f = kpi_raw[kpi_raw['wk'] == sel]
+            d_f = dsat_raw[(dsat_raw['date_dt'] >= sel) & (dsat_raw['date_dt'] < sel + pd.Timedelta(days=7))] if not dsat_raw.empty else dsat_raw.copy()
+        else: k_f, d_f = kpi_raw.copy(), dsat_raw.copy()
+        
     else:
         kpi_raw['mo'] = kpi_raw['date_dt'].dt.strftime('%B %Y') if freq == "Monthly" else kpi_raw['date_dt'].dt.year
-        available = kpi_raw.sort_values('date_dt', ascending=False)['mo'].unique()
-        sel = st.sidebar.selectbox(f"Select Period", available)
-        k_f = kpi_raw[kpi_raw['mo'] == sel]
-        if freq == "Monthly": d_f = dsat_raw[dsat_raw['date_dt'].dt.strftime('%B %Y') == sel] if not dsat_raw.empty else dsat_raw
-        else: d_f = dsat_raw[dsat_raw['date_dt'].dt.year == sel] if not dsat_raw.empty else dsat_raw
+        available = kpi_raw.sort_values('date_dt', ascending=False)['mo'].dropna().unique()
+        if len(available) > 0:
+            sel = st.sidebar.selectbox(f"Select Period", available)
+            k_f = kpi_raw[kpi_raw['mo'] == sel]
+            if freq == "Monthly": d_f = dsat_raw[dsat_raw['date_dt'].dt.strftime('%B %Y') == sel] if not dsat_raw.empty else dsat_raw.copy()
+            else: d_f = dsat_raw[dsat_raw['date_dt'].dt.year == sel] if not dsat_raw.empty else dsat_raw.copy()
+        else: k_f, d_f = kpi_raw.copy(), dsat_raw.copy()
 else:
-    k_f, d_f = pd.DataFrame(), pd.DataFrame()
+    k_f, d_f = kpi_raw.copy(), dsat_raw.copy()
 
 # --- 6. HIERARCHY DRILL-DOWN ---
 access = str(user.get('level', 'IC')).strip()
@@ -187,9 +198,8 @@ if access == "Admin":
     if view_mode == "Entire Organisation": 
         scoped_emails = team_db['email'].unique().tolist()
     else:
-        mgrs = team_db[team_db['mgr'] == view_mode]['name'].unique().tolist()
-        if not mgrs:
-            scoped_emails = team_db['email'].unique().tolist()
+        mgrs = team_db[team_db['mgr'] == view_mode]['name'].dropna().unique().tolist()
+        if not mgrs: scoped_emails = team_db['email'].unique().tolist()
         else:
             mgr_sel = st.sidebar.selectbox(f"Managers under {view_mode}", ["All Teams"] + mgrs)
             if mgr_sel == "All Teams": 
@@ -197,7 +207,7 @@ if access == "Admin":
                 adv_emails = team_db[team_db['mgr'].isin(mgrs)]['email'].tolist()
                 scoped_emails = list(set(mgr_emails + adv_emails))
             else:
-                advs = team_db[team_db['mgr'] == mgr_sel]['name'].unique().tolist()
+                advs = team_db[team_db['mgr'] == mgr_sel]['name'].dropna().unique().tolist()
                 adv_sel = st.sidebar.selectbox(f"Advisors under {mgr_sel}", ["Full Team"] + advs)
                 if adv_sel == "Full Team":
                     mgr_email = team_db[team_db['name'] == mgr_sel]['email'].tolist()
@@ -216,14 +226,13 @@ elif access == "Manager":
         if mode == "Team Overview": 
             scoped_emails = my_advs['email'].tolist() + [user.get('email')]
         else:
-            adv_options = my_advs['name'].unique().tolist()
+            adv_options = my_advs['name'].dropna().unique().tolist()
             adv_sel = st.sidebar.selectbox("Select Advisor", adv_options)
             found = my_advs[my_advs['name'] == adv_sel]['email'].tolist()
             scoped_emails = found if found else [user.get('email')]
 else:
     scoped_emails = [user.get('email')]
 
-# FIX: `f_kpi` filters data to strictly display ONLY the scoped emails defined above.
 f_kpi = k_f[k_f['email'].isin(scoped_emails)]
 f_dsat = d_f[d_f['email'].isin(scoped_emails)]
 
@@ -234,21 +243,26 @@ st.success(f"Welcome **{user.get('name', 'User')}**!! | Access Level : **{access
 tabs = st.tabs(["📊 Performance Overview", "🚫 DSAT Analysis & Feedback"] + (["🏆 Leaderboards"] if access != "IC" else []))
 
 with tabs[0]:
-    # Averages safely ignore NaNs (Blanks)
-    avg_score = f_kpi['shift_score'].dropna().mean() if not f_kpi['shift_score'].dropna().empty else 0
+    # Safe mean logic ensuring no NaN disruptions
+    s_scores = f_kpi['shift_score'].dropna()
+    avg_score = s_scores.mean() if not s_scores.empty else 0
     
     st.markdown("### Performance Narrative")
     st.info(f"In the selected timeframe, the group maintains an average Shift Score of **{avg_score:.2f}%**. Monitoring trends indicate consistent engagement during active operations.")
     
     st.markdown("### Performance Summary")
     c1, c2, c3, c4, c5 = st.columns(5)
+    active_surveys = f_kpi[f_kpi['surveys'] > 0] if 'surveys' in f_kpi.columns else pd.DataFrame()
     
-    avg_sent = f_kpi['sent_rate'].dropna().mean() if not f_kpi['sent_rate'].dropna().empty else 0
-    avg_sat = f_kpi['sat_rate'].dropna().mean() if not f_kpi['sat_rate'].dropna().empty else 0
-    tot_ob = int(f_kpi['ob'].sum()) if not f_kpi.empty else 0
-    tot_qa = int(f_kpi['qa'].sum()) if not f_kpi.empty else 0
+    sent_rates = active_surveys['sent_rate'].dropna() if 'sent_rate' in active_surveys.columns else pd.Series([])
+    avg_sent = sent_rates.mean() if not sent_rates.empty else 0
     
-    # Custom Number Blocks with Target Indication
+    sat_rates = active_surveys['sat_rate'].dropna() if 'sat_rate' in active_surveys.columns else pd.Series([])
+    avg_sat = sat_rates.mean() if not sat_rates.empty else 0
+    
+    tot_ob = int(f_kpi['ob'].fillna(0).sum()) if not f_kpi.empty else 0
+    tot_qa = int(f_kpi['qa'].fillna(0).sum()) if not f_kpi.empty else 0
+    
     c1.markdown(create_metric_card("Avg Survey Sent", avg_sent, 85, True), unsafe_allow_html=True)
     c2.markdown(create_metric_card("Avg Satisfied Survey", avg_sat, 90, True), unsafe_allow_html=True)
     c3.markdown(create_metric_card("Avg Shift Score", avg_score, 85, True), unsafe_allow_html=True)
@@ -282,59 +296,40 @@ with tabs[1]:
     if not f_dsat.empty:
         f_table = f_dsat.merge(team_db[['email', 'name', 'mgr']], on='email', how='left')
         
-        # FIX: Dynamic Columns - Manager only shows up for Admins
         headers = ["Date", "Advisor Name"]
         col_w = [1.5, 2]
-        
-        if access == "Admin":
-            headers.append("Manager")
-            col_w.append(1.5)
-            
+        if access == "Admin": headers.append("Manager"); col_w.append(1.5)
         headers.extend(["DSAT Chat Link", "Type", "Feedback"])
         col_w.extend([2.5, 1.5, 3])
+        if access != "IC": headers.append("Action"); col_w.append(1.5)
         
-        if access != "IC":
-            headers.append("Action")
-            col_w.append(1.5)
-        
-        # Render Table Header
         header_cols = st.columns(col_w)
         for i, h in enumerate(headers): header_cols[i].write(f"**{h}**")
         st.divider()
         
-        # Render Table Rows
         for idx, row in f_table.reset_index().iterrows():
             r = st.columns(col_w)
             date_str = str(row['date_dt'])[:10] if pd.notna(row['date_dt']) else "-"
-            fb = row.get('feedback', '-')
-            tp = row.get('type', '-')
+            fb, tp = row.get('feedback', '-'), row.get('type', '-')
             
             c_idx = 0
             r[c_idx].write(date_str); c_idx += 1
             r[c_idx].write(row.get('name', '-')); c_idx += 1
-            
-            if access == "Admin":
-                r[c_idx].write(row.get('mgr', '-')); c_idx += 1
-                
+            if access == "Admin": r[c_idx].write(row.get('mgr', '-')); c_idx += 1
             r[c_idx].markdown(f"[🔗 View Chat Context]({row.get('link', '#')})"); c_idx += 1
             r[c_idx].write(tp if str(tp) != 'nan' and tp != "" else "-"); c_idx += 1
             r[c_idx].write(fb if str(fb) != 'nan' and fb != "" else "-"); c_idx += 1
             
-            if access != "IC":
-                if r[c_idx].button("📝 Update", key=f"upd_{idx}"):
-                    open_form_dialog(row)
+            if access != "IC" and r[c_idx].button("📝 Update", key=f"upd_{idx}"):
+                open_form_dialog(row)
 
 if access != "IC":
     with tabs[2]:
         if not f_kpi.empty:
-            # FIX: Grouping strictly by f_kpi ensures the leaderboard matches the user's specific Admin/Manager filter selections.
             ldb = f_kpi.groupby('name').agg({'sent_rate':'mean', 'sat_rate':'mean', 'qa':'sum', 'ob':'sum'}).reset_index()
-            
-            # Fill remaining NaN with 0 only for final UI display
             ldb['sent_rate'] = ldb['sent_rate'].fillna(0).round(2)
             ldb['sat_rate'] = ldb['sat_rate'].fillna(0).round(2)
-            ldb['qa'] = ldb['qa'].fillna(0)
-            ldb['ob'] = ldb['ob'].fillna(0)
+            ldb['qa'], ldb['ob'] = ldb['qa'].fillna(0), ldb['ob'].fillna(0)
             
             st.markdown("### 🏆 Success Champions")
             st.caption("Advisors maintaining an Avg Survey Sent ≥ 85.00% AND Avg Satisfied Survey ≥ 90.00%.")
