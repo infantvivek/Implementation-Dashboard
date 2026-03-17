@@ -9,11 +9,11 @@ KPI_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSU-KDmKs9i1EIEuIuJTu
 DSAT_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSU-KDmKs9i1EIEuIuJTuKKxG4nFZoPluRqOonP2BxRbQuVJunS8WQ9uJA6ayUCdoq043uFMH6u3UcM/pub?gid=367459010&single=true&output=csv"
 LOGO_URL = "https://s3.amazonaws.com/cdn.freshdesk.com/data/helpdesk/attachments/production/48175265495/original/PTXBCP40UHx-8LCKsM1zqLX-pq8nndFHSw.png?1641235482"
 
-# PRE-FILLED FORM CONFIG (Update with your actual IDs)
+# PRE-FILLED FORM CONFIG (Update placeholders with your Form IDs)
 FORM_ID = "YOUR_FORM_ID"
-ENTRY_KEY = "entry.1"
-ENTRY_FEEDBACK = "entry.2"
-ENTRY_TYPE = "entry.3"
+ENTRY_KEY = "entry.1"      # RecordKey field ID
+ENTRY_FEEDBACK = "entry.2" # Feedback field ID
+ENTRY_TYPE = "entry.3"     # Type field ID
 
 st.set_page_config(layout="wide", page_title="HighLevel CS Performance Tracker")
 
@@ -35,20 +35,39 @@ def format_minutes_to_hours(total_minutes):
 
 def generate_form_url(row):
     base = f"https://docs.google.com/forms/d/e/{FORM_ID}/viewform?usp=pp_url"
-    params = {ENTRY_KEY: row.get('RecordKey',''), ENTRY_FEEDBACK: row.get('Feedback',''), ENTRY_TYPE: row.get('Type','')}
+    params = {
+        ENTRY_KEY: row.get('RecordKey',''), 
+        ENTRY_FEEDBACK: row.get('Feedback',''), 
+        ENTRY_TYPE: row.get('Type','')
+    }
     return f"{base}&{urllib.parse.urlencode(params)}"
 
-# --- 3. ROBUST DATA LOADING ---
+# --- 3. ROBUST DATA LOADING & MAPPING ---
 @st.cache_data(ttl=60)
 def load_data(url, sheet_type=None):
     try:
         df = pd.read_csv(url)
+        # Aggressive header cleaning
         df.columns = df.columns.astype(str).str.strip().str.replace('\ufeff', '').str.replace('"', '')
         
         mappings = {
-            "KPI": {"Date_level - AS": "Date", "Agent Name": "Advisor Name", "IA": "IA_Hours", "Advisor Call Time ": "Advisor Call Time", "Manager": "Manager Name"},
-            "TEAM": {"Manager": "Manager Name", "Access level": "Access Level", "Advisor Email": "Email"},
-            "DSAT": {"Advisor Email": "Email", "Chat DSAT URL": "DSAT chat link", "Type": "Type"}
+            "KPI": {
+                "Date_level - AS": "Date", 
+                "Agent Name": "Advisor Name", 
+                "IA": "IA_Hours",
+                "Advisor Call Time ": "Advisor Call Time",
+                "Manager": "Manager Name"
+            },
+            "TEAM": {
+                "Manager": "Manager Name", 
+                "Access level": "Access Level",
+                "Advisor Email": "Email"
+            },
+            "DSAT": {
+                "Advisor Email": "Email", 
+                "Chat DSAT URL": "DSAT chat link",
+                "Manager": "Manager Name"
+            }
         }
         
         if sheet_type in mappings:
@@ -61,9 +80,8 @@ def load_data(url, sheet_type=None):
             df['Email'] = df['Email'].astype(str).str.strip().str.lower()
             
         if sheet_type == "KPI":
-            ia_col = 'IA_Hours' if 'IA_Hours' in df.columns else 'IA'
-            df['IA_Mins'] = df[ia_col].apply(parse_time_to_minutes)
-            df['Call_Mins'] = df['Advisor Call Time'].apply(parse_time_to_minutes) if 'Advisor Call Time' in df.columns else 0
+            df['IA_Mins'] = df['IA_Hours'].apply(parse_time_to_minutes)
+            df['Call_Mins'] = df['Advisor Call Time'].apply(parse_time_to_minutes)
             df['Shift_Score'] = (df['Call_Mins'] / df['IA_Mins'] * 100).fillna(0)
             for col in ['Sent Rate %', 'Satisfied Survey %', 'Total Survey', 'Q/A Calls', 'OB Calls']:
                 if col in df.columns:
@@ -88,7 +106,7 @@ if not st.session_state.auth:
             else: st.error("Invalid credentials.")
     st.stop()
 
-# --- 5. DATA PREP ---
+# --- 5. DATA PREP & RECOVERY ---
 user, kpi_raw, dsat_raw, team_db = st.session_state.auth, load_data(KPI_URL, "KPI"), load_data(DSAT_URL, "DSAT"), load_data(TEAM_URL, "TEAM")
 level = user.get('Access Level', 'IC') 
 
@@ -98,7 +116,7 @@ dsat_raw['Date_Parsed'] = pd.to_datetime(dsat_raw['Timestamp'], errors='coerce')
 if 'Processed' in dsat_raw.columns:
     dsat_raw = dsat_raw[dsat_raw['Processed'] != 'DUPLICATE']
 
-# --- RECOVER ADVISOR NAME IN DSAT ---
+# RECOVER ADVISOR NAME FOR DSAT IF MISSING
 if 'Advisor Name' not in dsat_raw.columns:
     dsat_raw = dsat_raw.merge(team_db[['Email', 'Advisor Name']], on='Email', how='left')
 
@@ -119,32 +137,34 @@ else:
     sel = st.sidebar.selectbox("Month:", kpi_raw.sort_values('Date_Parsed', ascending=False)['Month_Label'].dropna().unique())
     f_kpi_t, f_dsat_t = kpi_raw[kpi_raw['Month_Label'] == sel], dsat_raw[dsat_raw['Date_Parsed'].dt.strftime('%B %Y') == sel]
 
-# --- 7. PERMISSIONS ---
+# --- 7. PERMISSIONS SCOPING ---
 if level == "Admin":
-    scope = st.sidebar.radio("Scope", ["Global", "Manager", "Advisor"])
+    scope = st.sidebar.radio("Scope", ["Global", "Manager Team", "Individual Advisor"])
     if scope == "Global": f_kpi, f_dsat = f_kpi_t, f_dsat_t
-    elif scope == "Manager":
-        m_name = st.sidebar.selectbox("Manager", team_db[team_db['Access Level'] == 'Manager']['Advisor Name'].unique())
+    elif scope == "Manager Team":
+        m_name = st.sidebar.selectbox("Select Manager", team_db[team_db['Access Level'] == 'Manager']['Advisor Name'].unique())
         emails = team_db[team_db['Manager Name'] == m_name]['Email'].unique()
         f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'].isin(emails)], f_dsat_t[f_dsat_t['Email'].isin(emails)]
     else:
-        adv_n = st.sidebar.selectbox("Advisor", sorted(kpi_raw['Advisor Name'].dropna().unique()))
+        adv_n = st.sidebar.selectbox("Select Advisor", sorted(kpi_raw['Advisor Name'].dropna().unique()))
         f_kpi, f_dsat = f_kpi_t[f_kpi_t['Advisor Name'] == adv_n], f_dsat_t[f_dsat_t['Email'].isin(team_db[team_db['Advisor Name']==adv_n]['Email'])]
 elif level == "Manager":
     emails = team_db[team_db['Manager Name'] == user['Advisor Name']]['Email'].unique()
-    sub = st.sidebar.radio("View", ["Team", "Drill-down"])
-    if sub == "Drill-down":
+    sub = st.sidebar.radio("View", ["Team Summary", "Advisor Drill-down"])
+    if sub == "Advisor Drill-down":
         adv_n = st.sidebar.selectbox("Member", team_db[team_db['Email'].isin(emails)]['Advisor Name'])
         f_kpi, f_dsat = f_kpi_t[f_kpi_t['Advisor Name'] == adv_n], f_dsat_t[f_dsat_t['Email'].isin(team_db[team_db['Advisor Name']==adv_n]['Email'])]
     else: f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'].isin(emails)], f_dsat_t[f_dsat_t['Email'].isin(emails)]
 else: f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'] == user['Email']], f_dsat_t[f_dsat_t['Email'] == user['Email']]
 
 # --- 8. DASHBOARD HEADER ---
-head1, head2 = st.columns([1, 6]); head1.image(LOGO_URL, width=80); head2.header("HIGHLEVEL CS PERFORMANCE TRACKER")
+c_logo, c_title = st.columns([1, 6]); c_logo.image(LOGO_URL, width=80); c_title.header("HIGHLEVEL CS PERFORMANCE TRACKER")
 st.caption(f"Welcome {user['Advisor Name']} | Access: {level} | Period: {sel}")
 
-# --- 9. TABS ---
-tabs = st.tabs(["Performance Hub", "DSAT Analysis"] + (["Leaderboards"] if level in ["Manager", "Admin"] else []))
+# --- 9. TABBED UI ---
+tab_names = ["Performance Hub", "DSAT Analysis"]
+if level in ["Manager", "Admin"]: tab_names.append("Leaderboards")
+tabs = st.tabs(tab_names)
 
 with tabs[0]:
     avg_score = f_kpi['Shift_Score'].mean() if not f_kpi.empty else 0
@@ -153,16 +173,19 @@ with tabs[0]:
     avg_sat = f_kpi[f_kpi['Total Survey'] > 0]['Satisfied Survey %'].mean() if not f_kpi.empty else 0
     
     st.markdown("### 📝 Performance Narrative")
-    st.info(f"1. Quality: Satisfaction at **{avg_sat:.2f}%** with **{avg_sent:.2f}%** sent rate.\n2. Efficiency: IA availability **{format_minutes_to_hours(avg_ia)}** (Shift Score: **{avg_score:.2f}%**).\n3. Alert: **{len(f_dsat)}** active DSAT records found.")
+    st.info(f"""
+    1. **Overall Quality:** You maintained a Satisfaction rate of **{avg_sat:.2f}%** with a Survey Sent rate of **{avg_sent:.2f}%**.
+    2. **Productivity:** Your average IA availability was **{format_minutes_to_hours(avg_ia)}**, resulting in a Shift Score of **{avg_score:.2f}%**.
+    3. **Quality Alerts:** There are **{len(f_dsat)}** active DSAT records identified for the selected period.
+    """)
     
     m = st.columns(5)
-    m[0].metric("Avg Shift Score", f"{avg_score:.2f}%")
-    m[1].metric("Avg IA Hours", format_minutes_to_hours(avg_ia))
-    m[2].metric("Avg Sent Rate %", f"{avg_sent:.2f}%")
-    m[3].metric("Avg Satisfied Survey", f"{avg_sat:.2f}%")
+    m[0].metric("Avg Shift Score", f"{avg_score:.2f}%"); m[1].metric("Avg IA Hours", format_minutes_to_hours(avg_ia))
+    m[2].metric("Avg Sent Rate %", f"{avg_sent:.2f}%"); m[3].metric("Avg Satisfied Survey", f"{avg_sat:.2f}%")
     m[4].metric("Total Survey", int(f_kpi['Total Survey'].sum()) if not f_kpi.empty else 0)
 
-    # 4-Trend Analysis
+    # 4-TREND ANALYSIS
+    st.markdown("### 📈 Performance Trends")
     ca, cb = st.columns(2)
     chart_d = f_kpi.groupby('Date_Parsed').mean(numeric_only=True).reset_index() if not f_kpi.empty else pd.DataFrame()
     with ca:
@@ -172,10 +195,10 @@ with tabs[0]:
         if not chart_d.empty: st.plotly_chart(px.line(chart_d, x='Date_Parsed', y='IA_Mins', title="IA Minutes Trend", markers=True), use_container_width=True)
         if not chart_d.empty: st.plotly_chart(px.line(chart_d, x='Date_Parsed', y='Sent Rate %', title="Survey Sent Trend", markers=True), use_container_width=True)
 
-with tab2:
-    st.markdown("### 🚫 DSAT Analysis")
+with tabs[1]:
+    st.markdown("### 🚫 DSAT Summary")
     s1, s2, s3 = st.columns(3)
-    s1.metric("Total Received", len(f_dsat))
+    s1.metric("Total DSATs", len(f_dsat))
     s2.metric("Controllable", len(f_dsat[f_dsat['Type'] == 'Controllable']) if 'Type' in f_dsat.columns else 0)
     s3.metric("Uncontrollable", len(f_dsat[f_dsat['Type'] == 'Uncontrollable']) if 'Type' in f_dsat.columns else 0)
     
@@ -183,16 +206,14 @@ with tab2:
         if level in ["Manager", "Admin"]:
             st.divider()
             st.subheader("Action Center")
-            # Safe selection using formatting to avoid array errors
-            options = f_dsat.apply(lambda r: f"{r['Advisor Name']} - {r['Timestamp']}", axis=1).unique()
-            selected_id = st.selectbox("Select Record to Provide Feedback", options)
-            
-            # Find row
-            selected_row = f_dsat[f_dsat.apply(lambda r: f"{r['Advisor Name']} - {r['Timestamp']}", axis=1) == selected_id].iloc[0]
-            st.link_button("🚀 Submit Feedback / Update Type", generate_form_url(selected_row), use_container_width=True)
+            # Select specific DSAT to provide feedback on via button
+            f_dsat['SelectionLabel'] = f_dsat['Advisor Name'] + " - " + f_dsat['Timestamp'].astype(str)
+            target_id = st.selectbox("Select Record to Action", f_dsat['SelectionLabel'].unique())
+            row_data = f_dsat[f_dsat['SelectionLabel'] == target_id].iloc[0]
+            st.link_button("🚀 Submit Feedback / Update Type", generate_form_url(row_data), use_container_width=True)
             st.divider()
 
-        # Display table
+        # Display Cleaned Table
         target_cols = ['Timestamp', 'DSAT chat link', 'Feedback', 'Type']
         df_v = f_dsat[[c for c in target_cols if c in f_dsat.columns]].copy()
         df_v.rename(columns={'Timestamp': 'Date'}, inplace=True)
@@ -203,9 +224,10 @@ with tab2:
 if level in ["Manager", "Admin"] and len(tabs) > 2:
     with tabs[2]:
         st.markdown("#### 🏆 Leaderboards")
-        st.write("**Criteria: Survey Sent Rate ≥ 85% and Satisfied Survey > 90% (Excludes 0-survey days)**")
+        st.write("**Criteria: Survey Sent Rate ≥ 85% and Satisfied Survey > 90% (Excluding 0-survey days)**")
         ldb = f_kpi[f_kpi['Total Survey'] > 0].groupby('Advisor Name').agg({'Sent Rate %':'mean','Satisfied Survey %':'mean'}).reset_index()
         ldb_vol = f_kpi.groupby('Advisor Name').agg({'Q/A Calls':'sum','OB Calls':'sum'}).reset_index()
+        
         l1, l2, l3 = st.columns(3)
         with l1:
             st.write("**Success Champions**")
