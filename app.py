@@ -23,31 +23,28 @@ st.set_page_config(layout="wide", page_title="HighLevel CS Performance Tracker")
 # --- 2. GHL DYNAMIC THEME ---
 st.markdown("""
     <style>
-    /* Metric Cards */
     .stMetric { 
         background-color: var(--secondary-background-color); 
         padding: 20px; border-radius: 12px; border-left: 5px solid #0052FF; 
         box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); 
     }
     [data-testid="stMetricValue"] { color: var(--text-color); font-weight: 700; }
-    [data-testid="stMetricLabel"] { color: var(--text-color); opacity: 0.8; font-size: 0.9rem; }
-    
-    /* Tabs */
-    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
-    .stTabs [data-baseweb="tab"] { 
-        background-color: var(--secondary-background-color); 
-        border-radius: 8px 8px 0 0; color: var(--text-color); padding: 12px 24px; font-weight: 600;
-    }
     .stTabs [aria-selected="true"] { background-color: #0052FF !important; color: white !important; }
-    
-    /* Info Box */
     div.stInfo { background-color: rgba(0, 82, 255, 0.08); border-left: 5px solid #0052FF; color: var(--text-color); border-radius: 10px; }
     
-    /* Headers & Text */
-    h1, h2, h3, p, span { color: var(--text-color) !important; }
-    
-    /* GHL DARK MODE VISIBILITY FIX (SIDEBAR LOGO) */
-    [data-testid="stSidebarNav"] + div img { filter: invert(1); padding-top: 20px; }
+    /* LEFT CORNER LOGO VISIBILITY IN DARK MODE */
+    [data-testid="stSidebarNav"]::before {
+        content: "";
+        display: block;
+        background-image: url('""" + LOGO_URL + """');
+        background-size: contain;
+        background-repeat: no-repeat;
+        width: 180px;
+        height: 60px;
+        margin-left: 20px;
+        margin-top: 20px;
+        filter: invert(1) brightness(2); /* Ensures visibility in dark theme */
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -63,18 +60,27 @@ def parse_time_to_minutes(time_str):
         return (h * 60) + m
     except: return 0
 
-def format_minutes_to_hours(total_minutes):
-    if pd.isna(total_minutes) or total_minutes <= 0: return "0h 0m"
-    return f"{int(total_minutes // 60)}h {int(total_minutes % 60)}m"
-
-def generate_form_url(row):
-    base = f"https://docs.google.com/forms/d/e/{FORM_ID}/viewform?embedded=true&usp=pp_url"
-    params = {
-        ENTRY_KEY: row.get('RecordKey',''), 
-        ENTRY_FEEDBACK: row.get('Feedback','') if pd.notna(row.get('Feedback')) else '', 
-        ENTRY_TYPE: row.get('Type','') if pd.notna(row.get('Type')) else ''
-    }
-    return f"{base}&{urllib.parse.urlencode(params)}"
+def create_ghl_gauge(title, value, target=None, is_percent=True, color_steps=False):
+    steps = []
+    if color_steps:
+        steps = [{'range': [0, 70], 'color': "#ff4b4b"}, {'range': [70, 85], 'color': "#ffa500"}, {'range': [85, 100], 'color': "#00c853"}]
+    
+    fig = go.Figure(go.Indicator(
+        mode = "gauge+number",
+        value = value,
+        domain = {'x': [0, 1], 'y': [0, 1]},
+        title = {'text': title, 'font': {'size': 18, 'color': 'gray'}},
+        number = {'suffix': "%" if is_percent else "", 'font': {'color': '#0052FF', 'size': 35}},
+        gauge = {
+            'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "gray"},
+            'bar': {'color': "#0052FF"},
+            'bgcolor': "white", 'borderwidth': 1, 'bordercolor': "#E2E8F0",
+            'steps': steps,
+            'threshold': {'line': {'color': "black", 'width': 3}, 'thickness': 0.75, 'value': target} if target else None
+        }
+    ))
+    fig.update_layout(height=220, margin=dict(l=30, r=30, t=50, b=20), paper_bgcolor='rgba(0,0,0,0)')
+    return fig
 
 @st.dialog("Update DSAT Record", width="large")
 def open_form_dialog(url):
@@ -101,13 +107,14 @@ def load_data(url, sheet_type=None):
             for col in ['Sent Rate %', 'Satisfied Survey %', 'Total Survey', 'Q/A Calls', 'OB Calls']:
                 if col in df.columns: df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', '').str.strip(), errors='coerce').fillna(0)
         return df
-    except Exception as e:
-        st.error(f"Error loading {sheet_type}: {e}"); return pd.DataFrame()
+    except Exception as e: return pd.DataFrame()
 
 # --- 5. AUTH ---
 if 'auth' not in st.session_state: st.session_state.auth = None
 if not st.session_state.auth:
-    col_l1, col_l2 = st.columns([1, 5]); col_l1.image(LOGO_URL, width=100); col_l2.title("HIGHLEVEL PERFORMANCE HUB")
+    col_l1, col_l2 = st.columns([1, 4])
+    with col_l1: st.image(LOGO_URL, width=150)
+    with col_l2: st.title("HIGHLEVEL PERFORMANCE HUB")
     with st.form("login"):
         e_in, p_in = st.text_input("Work Email").lower().strip(), st.text_input("Password", type="password")
         if st.form_submit_button("Sign In"):
@@ -126,8 +133,7 @@ dsat_raw['Date_Parsed'] = pd.to_datetime(dsat_raw['Timestamp'], errors='coerce')
 if 'Processed' in dsat_raw.columns: dsat_raw = dsat_raw[dsat_raw['Processed'] != 'DUPLICATE']
 if 'Advisor Name' not in dsat_raw.columns: dsat_raw = dsat_raw.merge(team_db[['Email', 'Advisor Name', 'Manager Name']], on='Email', how='left')
 
-# --- 7. FILTERS & HIERARCHY ---
-st.sidebar.image(LOGO_URL, width=150)
+# --- 7. FILTERS ---
 freq = st.sidebar.radio("View Frequency:", ["Daily", "Weekly", "Monthly", "Yearly"], horizontal=True)
 
 if freq == "Daily":
@@ -142,17 +148,17 @@ elif freq == "Monthly":
     kpi_raw['Month_Label'] = kpi_raw['Date_Parsed'].dt.strftime('%B %Y')
     sel = st.sidebar.selectbox("Select Month:", kpi_raw.sort_values('Date_Parsed', ascending=False)['Month_Label'].dropna().unique())
     f_kpi_t, f_dsat_t = kpi_raw[kpi_raw['Month_Label'] == sel], dsat_raw[dsat_raw['Date_Parsed'].dt.strftime('%B %Y') == sel]
-else: # Yearly
+else:
     kpi_raw['Year_Label'] = kpi_raw['Date_Parsed'].dt.year
     sel = st.sidebar.selectbox("Select Year:", sorted(kpi_raw['Year_Label'].dropna().unique(), reverse=True))
-    f_kpi_t, f_dsat_t = kpi_raw[kpi_raw['Year_Label'] == sel], dsat_raw[dsat_raw['Date_Parsed'].dt.year == sel]
+    f_kpi_t, f_dsat_t = kpi_raw[kpi_raw['Year_Label'] == sel], dsat_raw[kpi_raw['Year_Label'] == sel]
 
+# Hierarchy Filter
 if level == "Admin":
     sr_mgr = st.sidebar.selectbox("Sr. Manager Team", ["Entire Organization", "Jarvis Sokolowich", "Sumit Ludhwani"])
     if sr_mgr != "Entire Organization":
         m_list = team_db[team_db['Manager Name'] == sr_mgr]['Advisor Name'].unique()
-        m_filter = st.sidebar.selectbox(f"Managers under {sr_mgr}", ["All"] + list(m_list))
-        target_emails = team_db[team_db['Manager Name'] == (sr_mgr if m_filter == "All" else m_filter)]['Email'].unique()
+        target_emails = team_db[team_db['Manager Name'].isin(m_list)]['Email'].unique()
         f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'].isin(target_emails)], f_dsat_t[f_dsat_t['Email'].isin(target_emails)]
     else: f_kpi, f_dsat = f_kpi_t, f_dsat_t
 elif level == "Manager":
@@ -160,114 +166,44 @@ elif level == "Manager":
     f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'].isin(target_emails)], f_dsat_t[f_dsat_t['Email'].isin(target_emails)]
 else: f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'] == user['Email']], f_dsat_t[f_dsat_t['Email'] == user['Email']]
 
-# --- 8. DASHBOARD UI ---
-st.title("🚀 PERFORMANCE HUB")
+# --- 8. UI ---
+st.title("PERFORMANCE HUB")
 st.caption(f"Member: {user['Advisor Name']} | Access: {level} | Period: {sel}")
 
-tabs = st.tabs(["Performance Hub", "DSAT Analysis"] + (["Leaderboards"] if level in ["Manager", "Admin"] else []))
+tabs = st.tabs(["Overview", "DSAT Audit", "Leaderboards"])
 
 with tabs[0]:
-    active_kpi = f_kpi[f_kpi['IA_Mins'] > 0]
-    avg_score = active_kpi['Shift_Score'].mean() if not active_kpi.empty else 0
+    avg_score = f_kpi[f_kpi['IA_Mins'] > 0]['Shift_Score'].mean() if not f_kpi.empty else 0
     avg_sent = f_kpi[f_kpi['Total Survey'] > 0]['Sent Rate %'].mean() if not f_kpi.empty else 0
     avg_sat = f_kpi[f_kpi['Total Survey'] > 0]['Satisfied Survey %'].mean() if not f_kpi.empty else 0
-    total_ob = f_kpi['OB Calls'].sum() if not f_kpi.empty else 0
-    total_qa = f_kpi['Q/A Calls'].sum() if not f_kpi.empty else 0
+    total_ob, total_qa = f_kpi['OB Calls'].sum() if not f_kpi.empty else 0, f_kpi['Q/A Calls'].sum() if not f_kpi.empty else 0
     
-    st.info(f"Summary: Quality: **{avg_sat:.2f}%** | Sent Rate: **{avg_sent:.2f}%** | Shift Score: **{avg_score:.2f}%**")
-    
-    # Hero Gauge Metrics (Rounded to 2 decimals)
-    g1, g2, g3 = st.columns(3)
-    # HERO GAUGES with Standardization 0-100 & Red/Orange/Green Steps
-    fig_score = go.Figure(go.Indicator(
-        mode = "gauge+number",
-        value = avg_score,
-        domain = {'x': [0, 1], 'y': [0, 1]},
-        title = {'text': "Avg Shift Score", 'font': {'size': 18, 'color': 'gray'}},
-        number = {'suffix': "%", 'font': {'color': '#0052FF', 'size': 35}},
-        gauge = {
-            'axis': {'range': [0, 100], 'tickwidth': 1}, 'bar': {'color': "#0052FF"},
-            'bgcolor': "white", 'borderwidth': 2, 'bordercolor': "#E2E8F0",
-            'steps': [{'range': [0, 70], 'color': "red"}, {'range': [70, 85], 'color': "orange"}, {'range': [85, 100], 'color': "green"}],
-            'threshold': {'line': {'color': "black", 'width': 3}, 'thickness': 0.75, 'value': 85}
-        }
-    )); fig_score.update_layout(height=240, margin=dict(l=30, r=30, t=50, b=20), paper_bgcolor='rgba(0,0,0,0)'); g1.plotly_chart(fig_score, use_container_width=True)
+    # HERO GAUGES (Shift Score, Sent Rate, Satisfied Survey)
+    c1, c2, c3 = st.columns(3)
+    c1.plotly_chart(create_ghl_gauge("Avg Shift Score", avg_score, 85, color_steps=True), use_container_width=True)
+    c2.plotly_chart(create_ghl_gauge("Avg Sent Rate %", avg_sent, 85, color_steps=True), use_container_width=True)
+    c3.plotly_chart(create_ghl_gauge("Avg Satisfied %", avg_sat, 90, color_steps=True), use_container_width=True)
 
-    fig_sent = go.Figure(go.Indicator(
-        mode = "gauge+number",
-        value = avg_sent,
-        domain = {'x': [0, 1], 'y': [0, 1]},
-        title = {'text': "Avg Sent Rate", 'font': {'size': 18, 'color': 'gray'}},
-        number = {'suffix': "%", 'font': {'color': '#0052FF', 'size': 35}},
-        gauge = {
-            'axis': {'range': [0, 100], 'tickwidth': 1}, 'bar': {'color': "#0052FF"},
-            'bgcolor': "white", 'borderwidth': 2, 'bordercolor': "#E2E8F0",
-            'steps': [{'range': [0, 70], 'color': "red"}, {'range': [70, 85], 'color': "orange"}, {'range': [85, 100], 'color': "green"}],
-            'threshold': {'line': {'color': "black", 'width': 3}, 'thickness': 0.75, 'value': 85}
-        }
-    )); fig_sent.update_layout(height=240, margin=dict(l=30, r=30, t=50, b=20), paper_bgcolor='rgba(0,0,0,0)'); g2.plotly_chart(fig_sent, use_container_width=True)
+    # EXACT VALUE GAUGES (OB & QA)
+    v1, v2 = st.columns(2)
+    v1.plotly_chart(create_ghl_gauge("Total OB Calls", int(total_ob), is_percent=False), use_container_width=True)
+    v2.plotly_chart(create_ghl_gauge("Total QA Calls", int(total_qa), is_percent=False), use_container_width=True)
 
-    fig_sat = go.Figure(go.Indicator(
-        mode = "gauge+number",
-        value = avg_sat,
-        domain = {'x': [0, 1], 'y': [0, 1]},
-        title = {'text': "Avg Satisfied Survey", 'font': {'size': 18, 'color': 'gray'}},
-        number = {'suffix': "%", 'font': {'color': '#0052FF', 'size': 35}},
-        gauge = {
-            'axis': {'range': [0, 100], 'tickwidth': 1}, 'bar': {'color': "#0052FF"},
-            'bgcolor': "white", 'borderwidth': 2, 'bordercolor': "#E2E8F0",
-            'steps': [{'range': [0, 70], 'color': "red"}, {'range': [70, 85], 'color': "orange"}, {'range': [85, 100], 'color': "green"}],
-            'threshold': {'line': {'color': "black", 'width': 3}, 'thickness': 0.75, 'value': 90}
-        }
-    )); fig_sat.update_layout(height=240, margin=dict(l=30, r=30, t=50, b=20), paper_bgcolor='rgba(0,0,0,0)'); g3.plotly_chart(fig_sat, use_container_width=True)
-
-    # Secondary Volume Cards with Exact Totals
-    g4, g5, *others = st.columns(4)
-    g4.plotly_chart(go.Figure(go.Indicator(
-        mode = "gauge+number+delta",
-        value = int(total_ob),
-        domain = {'x': [0, 1], 'y': [0, 1]},
-        title = {'text': "Total OB Calls", 'font': {'size': 18, 'color': 'gray'}},
-        number = {'font': {'color': '#0052FF', 'size': 35}},
-        gauge = {
-            'axis': {'range': [0, 100], 'tickwidth': 1}, 'bar': {'color': "#0052FF"},
-            'bgcolor': "white", 'borderwidth': 1, 'bordercolor': "#E2E8F0"
-        }
-    )).update_layout(height=220, margin=dict(l=30, r=30, t=50, b=20), paper_bgcolor='rgba(0,0,0,0)'), use_container_width=True)
-
-    g5.plotly_chart(go.Figure(go.Indicator(
-        mode = "gauge+number+delta",
-        value = int(total_qa),
-        domain = {'x': [0, 1], 'y': [0, 1]},
-        title = {'text': "Total QA Calls", 'font': {'size': 18, 'color': 'gray'}},
-        number = {'font': {'color': '#0052FF', 'size': 35}},
-        gauge = {
-            'axis': {'range': [0, 100], 'tickwidth': 1}, 'bar': {'color': "#0052FF"},
-            'bgcolor': "white", 'borderwidth': 1, 'bordercolor': "#E2E8F0"
-        }
-    )).update_layout(height=220, margin=dict(l=30, r=30, t=50, b=20), paper_bgcolor='rgba(0,0,0,0)'), use_container_width=True)
-
-    st.markdown("### Performance Trend Analysis")
-    # NEW GHL GAUGE & LINE CHARTS
-    trend_data = f_kpi.groupby('Date_Parsed').mean(numeric_only=True).reset_index()
-    t_c1, t_c2 = st.columns(2)
-    with t_c1:
-        st.plotly_chart(px.line(trend_data, x='Date_Parsed', y='Shift_Score', title="Avg Shift Score Trend", markers=True, color_discrete_sequence=['#0052FF']), use_container_width=True)
-        st.plotly_chart(px.line(trend_data, x='Date_Parsed', y='Sent Rate %', title="Avg Survey Sent Trend", markers=True, color_discrete_sequence=['#f59e0b']), use_container_width=True)
-    with t_c2:
-        st.plotly_chart(px.line(trend_data, x='Date_Parsed', y='Satisfied Survey %', title="Avg Satisfied Survey Trend", markers=True, color_discrete_sequence=['#22c55e']), use_container_width=True)
-        st.plotly_chart(px.line(trend_data, x='Date_Parsed', y='IA_Mins', title="Avg IA Minutes Trend", markers=True, color_discrete_sequence=['#0F172A']), use_container_width=True)
+    st.markdown("### 📈 Trend Analysis")
+    # 4 SPECIFIC TREND GRAPHS
+    trend_data = f_kpi.groupby('Date_Parsed').agg({'Sent Rate %':'mean', 'Satisfied Survey %':'mean', 'Q/A Calls':'sum', 'OB Calls':'sum'}).reset_index()
+    tc1, tc2 = st.columns(2)
+    with tc1:
+        st.plotly_chart(px.line(trend_data, x='Date_Parsed', y='Sent Rate %', title="Survey Sent Trend", markers=True, color_discrete_sequence=['#f59e0b']), use_container_width=True)
+        st.plotly_chart(px.line(trend_data, x='Date_Parsed', y='Q/A Calls', title="Total QA Calls Trend", markers=True, color_discrete_sequence=['#0F172A']), use_container_width=True)
+    with tc2:
+        st.plotly_chart(px.line(trend_data, x='Date_Parsed', y='Satisfied Survey %', title="Satisfied Survey Trend", markers=True, color_discrete_sequence=['#22c55e']), use_container_width=True)
+        st.plotly_chart(px.line(trend_data, x='Date_Parsed', y='OB Calls', title="Total OB Calls Trend", markers=True, color_discrete_sequence=['#0052FF']), use_container_width=True)
 
 with tabs[1]:
-    st.markdown("### DSAT Audit & Summary")
+    st.markdown("### DSAT Audit")
     pending = len(f_dsat[f_dsat['Feedback'].isna() | (f_dsat['Feedback'].astype(str).str.strip() == "")])
-    s1, s2, s3, s4 = st.columns(4)
-    s1.metric("Total DSATs", len(f_dsat))
-    s2.metric("Feedback Pending", pending, delta=f"{pending} Unactioned", delta_color="inverse")
-    s3.metric("Controllable", len(f_dsat[f_dsat['Type'] == 'Controllable']))
-    s4.metric("Uncontrollable", len(f_dsat[f_dsat['Type'] == 'Uncontrollable']))
-    
-    st.write("---")
+    st.metric("Feedback Pending", pending, delta=f"{pending} Unactioned", delta_color="inverse")
     if not f_dsat.empty:
         col_w = [1.5, 2, 2, 1, 1.2, 3, 1]
         for _, row in f_dsat.iterrows():
@@ -277,26 +213,22 @@ with tabs[1]:
             r[0].write(str(row['Timestamp'])[:10]); r[1].write(row['Advisor Name']); r[2].write(row.get('Manager Name', 'N/A'))
             r[3].markdown(f"[Chat]({row['DSAT chat link']})"); r[4].write(tp); r[5].write(fb)
             if r[6].button("Update", key=f"btn_{row['RecordKey']}"): open_form_dialog(generate_form_url(row))
-    else: st.write("No records found.")
 
-if level in ["Manager", "Admin"] and len(tabs) > 2:
-    with tabs[2]:
-        st.markdown("#### 🏆 Leaderboards")
-        st.write("**Criteria: Survey Sent Rate ≥ 85% and Satisfied Survey > 90% (Excluding 0-survey days)**")
-        ldb = f_kpi[f_kpi['Total Survey'] > 0].groupby('Advisor Name').agg({
-            'Sent Rate %':'mean', 'Satisfied Survey %':'mean', 'Q/A Calls':'sum', 'OB Calls':'sum'
-        }).reset_index().round(2)
-        
-        l1, l2, l3 = st.columns(3)
-        with l1:
-            st.write("**Success Champions**")
-            sc = ldb[(ldb['Sent Rate %'] >= 85) & (ldb['Satisfied Survey %'] > 90)].sort_values('Satisfied Survey %', ascending=False)
-            st.dataframe(sc[['Advisor Name', 'Satisfied Survey %', 'Sent Rate %']], hide_index=True, use_container_width=True)
-        with l2:
-            st.write("**Total QA Calls**"); st.dataframe(ldb.sort_values('Q/A Calls', ascending=False)[['Advisor Name', 'Q/A Calls']], hide_index=True, use_container_width=True)
-            st.write("**Avg Satisfied %**"); st.dataframe(ldb.sort_values('Satisfied Survey %', ascending=False)[['Advisor Name', 'Satisfied Survey %']], hide_index=True, use_container_width=True)
-        with l3:
-            st.write("**Total OB Calls**"); st.dataframe(ldb.sort_values('OB Calls', ascending=False)[['Advisor Name', 'OB Calls']], hide_index=True, use_container_width=True)
-            st.write("**Avg Sent %**"); st.dataframe(ldb.sort_values('Sent Rate %', ascending=False)[['Advisor Name', 'Sent Rate %']], hide_index=True, use_container_width=True)
+with tabs[2]:
+    st.markdown("### 🏆 Team Leaderboards")
+    ldb = f_kpi[f_kpi['Total Survey'] > 0].groupby('Advisor Name').agg({
+        'Sent Rate %':'mean', 'Satisfied Survey %':'mean', 'Q/A Calls':'sum', 'OB Calls':'sum'
+    }).reset_index().round(2)
+    l1, l2, l3 = st.columns(3)
+    with l1:
+        st.write("**Top Success Champions**")
+        sc = ldb[(ldb['Sent Rate %'] >= 85) & (ldb['Satisfied Survey %'] > 90)].sort_values('Satisfied Survey %', ascending=False)
+        st.dataframe(sc[['Advisor Name', 'Satisfied Survey %', 'Sent Rate %']], hide_index=True, use_container_width=True)
+    with l2:
+        st.write("**Total QA Calls**"); st.dataframe(ldb.sort_values('Q/A Calls', ascending=False)[['Advisor Name', 'Q/A Calls']], hide_index=True, use_container_width=True)
+        st.write("**Avg Satisfied %**"); st.dataframe(ldb.sort_values('Satisfied Survey %', ascending=False)[['Advisor Name', 'Satisfied Survey %']], hide_index=True, use_container_width=True)
+    with l3:
+        st.write("**Total OB Calls**"); st.dataframe(ldb.sort_values('OB Calls', ascending=False)[['Advisor Name', 'OB Calls']], hide_index=True, use_container_width=True)
+        st.write("**Avg Sent %**"); st.dataframe(ldb.sort_values('Sent Rate %', ascending=False)[['Advisor Name', 'Sent Rate %']], hide_index=True, use_container_width=True)
 
 st.sidebar.divider(); st.sidebar.button("Logout", on_click=lambda: st.session_state.update({'auth': None}))
