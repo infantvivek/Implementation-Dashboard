@@ -5,28 +5,39 @@ import plotly.express as px
 import plotly.graph_objects as go
 import urllib.parse
 import re
+from streamlit.components.v1 import iframe
 
-# --- 1. CONFIGURATION ---
+# --- 1. CONFIGURATION & URLS ---
 TEAM_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSU-KDmKs9i1EIEuIuJTuKKxG4nFZoPluRqOonP2BxRbQuVJunS8WQ9uJA6ayUCdoq043uFMH6u3UcM/pub?gid=0&single=true&output=csv"
 KPI_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSU-KDmKs9i1EIEuIuJTuKKxG4nFZoPluRqOonP2BxRbQuVJunS8WQ9uJA6ayUCdoq043uFMH6u3UcM/pub?gid=1918948844&single=true&output=csv"
 DSAT_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSU-KDmKs9i1EIEuIuJTuKKxG4nFZoPluRqOonP2BxRbQuVJunS8WQ9uJA6ayUCdoq043uFMH6u3UcM/pub?gid=367459010&single=true&output=csv"
 LOGO_URL = "https://s3.amazonaws.com/cdn.freshdesk.com/data/helpdesk/attachments/production/48175265495/original/PTXBCP40UHx-8LCKsM1zqLX-pq8nndFHSw.png?1641235482"
+
+# --- GOOGLE FORM CONFIGURATION ---
+# Replace with your actual Google Form ID and the Entry IDs for the pre-filled link
+FORM_ID = "YOUR_GOOGLE_FORM_ID_HERE"
+ENTRY_KEY = "entry.1"       # e.g., The field capturing the Chat Link (Unique ID)
+ENTRY_TYPE = "entry.2"      # e.g., The field capturing 'Type' (Controllable/Uncontrollable)
+ENTRY_FEEDBACK = "entry.3"  # e.g., The field capturing 'Feedback'
 
 st.set_page_config(layout="wide", page_title="Implementation Team Performance Hub", page_icon="🚀")
 
 # --- 2. SaaS/GHL THEME ENGINE ---
 st.markdown("""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     html, body, [class*="st-"] { font-family: 'Inter', sans-serif; }
-    :root { --ghl-blue: #0052FF; }
     
+    :root { --ghl-blue: #0052FF; }
+
+    /* SaaS Metric Cards */
     .stMetric {
         background-color: var(--secondary-background-color);
         padding: 24px; border-radius: 15px; border: 1px solid rgba(0, 82, 255, 0.1);
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
     }
     
+    /* GHL Sidebar Branding - Adaptive to Light/Dark Mode */
     [data-testid="stSidebarNav"]::before {
         content: ""; display: block; background-image: url('""" + LOGO_URL + """');
         background-size: contain; background-repeat: no-repeat;
@@ -34,7 +45,8 @@ st.markdown("""
         filter: brightness(0) invert(1); 
     }
     
-    .stTabs [aria-selected="true"] { background-color: #0052FF !important; color: white !important; border-radius: 8px; }
+    /* Tabs Styling */
+    .stTabs [aria-selected="true"] { background-color: var(--ghl-blue) !important; color: white !important; border-radius: 8px; }
     div.stInfo { background-color: rgba(0, 82, 255, 0.05); border-left: 5px solid #0052FF; color: var(--text-color); border-radius: 10px; padding: 15px; }
     </style>
 """, unsafe_allow_html=True)
@@ -55,19 +67,22 @@ def parse_duration(time_str):
 def load_and_standardize(url, sheet_type):
     try:
         df = pd.read_csv(url)
+        # Clean Headers: Strip whitespace, invisible characters, and lowercase
         df.columns = [re.sub(r'[^a-zA-Z0-9]', '', str(c)).lower() for c in df.columns]
         
+        # Strict Internal Mapping (Immune to header space changes)
         rmap = {
             "advisorname": "name", "agentname": "name", "email": "email", "advisoremail": "email",
             "manager": "mgr", "managername": "mgr", "accesslevel": "level", "password": "pass",
             "ia": "ia_raw", "advisorcalltime": "call_raw", "sentrate": "sent_rate", 
             "satisfiedsurvey": "sat_rate", "obcalls": "ob", "qacalls": "qa", 
-            "totalsurvey": "surveys", "timestamp": "ts", "processed": "date_raw", "chatdsaturl": "link", "datelevelas": "date_raw"
+            "totalsurvey": "surveys", "timestamp": "ts_raw", "processed": "date_raw", "chatdsaturl": "link", "datelevelas": "date_raw"
         }
         df = df.rename(columns=rmap)
         if 'email' in df.columns: df['email'] = df['email'].astype(str).str.strip().str.lower()
         
         if sheet_type == "KPI":
+            # Fix Percentages (Only scale if they are 0.0-1.1 range to prevent thousands bug)
             for col in ['sent_rate', 'sat_rate']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', ''), errors='coerce').fillna(0)
@@ -79,11 +94,11 @@ def load_and_standardize(url, sheet_type):
             df['shift_score'] = np.where(df['ia_min'] > 0, (df['call_min']/df['ia_min']*100), 0)
         
         if sheet_type == "DSAT":
-            # Map DSAT dates properly
-            df['date_dt'] = pd.to_datetime(df['date_raw'] if 'date_raw' in df.columns else df['ts'], errors='coerce')
+            df['date_dt'] = pd.to_datetime(df['date_raw'] if 'date_raw' in df.columns else df['ts_raw'], errors='coerce')
             
         return df
-    except: return pd.DataFrame()
+    except Exception as e:
+        return pd.DataFrame()
 
 def create_ghl_gauge(title, value, target):
     fig = go.Figure(go.Indicator(
@@ -96,6 +111,27 @@ def create_ghl_gauge(title, value, target):
     ))
     fig.update_layout(height=230, margin=dict(l=30, r=30, t=50, b=20), paper_bgcolor='rgba(0,0,0,0)')
     return fig
+
+@st.dialog("Update DSAT Feedback & Type", width="large")
+def open_form_dialog(row):
+    # Pass existing data to pre-fill the Google form
+    fb = row.get('feedback', '')
+    tp = row.get('type', '')
+    
+    params = {
+        ENTRY_KEY: row.get('link', ''),
+        ENTRY_FEEDBACK: fb if fb != "-" else "",
+        ENTRY_TYPE: tp if tp != "-" else ""
+    }
+    
+    url = f"https://docs.google.com/forms/d/e/{FORM_ID}/viewform?usp=pp_url&{urllib.parse.urlencode(params)}"
+    
+    st.markdown("### Update Repository Record")
+    st.caption("Submit your updates via the form below. A backend script will sync this to the Google Sheet.")
+    iframe(url, height=550, scrolling=True)
+    
+    if st.button("Close & Sync Dashboard", use_container_width=True):
+        st.rerun()
 
 # --- 4. AUTHENTICATION ---
 if 'auth' not in st.session_state: st.session_state.auth = None
@@ -115,7 +151,7 @@ if not st.session_state.auth:
             else: st.error("Invalid credentials.")
     st.stop()
 
-# --- 5. FREQUENCY FILTERS ---
+# --- 5. FREQUENCY & DATA FILTERING ---
 user = st.session_state.auth
 kpi_raw = load_and_standardize(KPI_URL, "KPI")
 dsat_raw = load_and_standardize(DSAT_URL, "DSAT")
@@ -170,18 +206,15 @@ if access == "Admin":
                     scoped_emails = found if found else []
 
 elif access == "Manager":
-    mode = st.sidebar.selectbox("View Mode", ["Team Overview", "Specific Advisor"])
+    mode = st.sidebar.selectbox("View Mode", ["Team Overview", "Specific Advisor View"])
     my_advs = team_db[team_db['mgr'] == user.get('name')]
-    
     if my_advs.empty:
-        # Fallback if manager has no reports
         scoped_emails = [user.get('email')]
     else:
         if mode == "Team Overview": 
             scoped_emails = my_advs['email'].unique().tolist()
         else:
-            adv_options = my_advs['name'].unique().tolist()
-            adv_sel = st.sidebar.selectbox("Select Advisor", adv_options)
+            adv_sel = st.sidebar.selectbox("Select Advisor", my_advs['name'].unique().tolist())
             found = my_advs[my_advs['name'] == adv_sel]['email'].tolist()
             scoped_emails = found if found else [user.get('email')]
 else:
@@ -194,11 +227,12 @@ f_dsat = d_f[d_f['email'].isin(scoped_emails)]
 st.title("Implementation Team Performance Hub")
 st.success(f"Welcome **{user.get('name', 'User')}**!! | Access Level : **{access}**")
 
-tabs = st.tabs(["📊 Performance Overview", "🚫 DSAT Analysis"] + (["🏆 Leaderboard"] if access != "IC" else []))
+tabs = st.tabs(["📊 Performance Overview", "🚫 DSAT Analysis & Feedback"] + (["🏆 Leaderboard"] if access != "IC" else []))
 
 with tabs[0]:
     avg_score = f_kpi['shift_score'].mean() if not f_kpi.empty else 0
-    st.info(f"**Performance Narrative:** In the selected timeframe, the group maintains an average Shift Score of **{avg_score:.2f}%**. Monitoring trends indicates consistent engagement during active operations.")
+    st.markdown("### Performance Narrative")
+    st.info(f"In the selected timeframe, the group maintains an average Shift Score of **{avg_score:.2f}%**. Monitoring trends indicate consistent engagement across outbound activities.")
     
     st.markdown("### Performance Summary")
     g1, g2, g3 = st.columns(3)
@@ -235,32 +269,31 @@ with tabs[1]:
     s3.metric("Controllable", f"{len(f_dsat[f_dsat['type'] == 'Controllable']) if 'type' in f_dsat.columns else 0}")
     s4.metric("Uncontrollable", f"{len(f_dsat[f_dsat['type'] == 'Uncontrollable']) if 'type' in f_dsat.columns else 0}")
 
-    st.markdown("### DSAT Details Log")
+    st.markdown("### DSAT Details & Feedback")
     if not f_dsat.empty:
-        # Map Name Safely
+        # Safely map Advisor Names
         f_table = f_dsat.merge(team_db[['email', 'name']], on='email', how='left')
         
-        # Prepare Display Dataframe
-        df_view = pd.DataFrame()
-        df_view['Date'] = f_table['date_dt'].dt.strftime('%Y-%m-%d')
-        df_view['Advisor Name'] = f_table['name']
-        df_view['DSAT chat link'] = f_table['link']
-        df_view['Feedback'] = f_table['feedback'].fillna("")
+        col_w = [1.5, 2, 1.2, 1.5, 3] + ([1] if access != "IC" else [])
+        headers = ["Date", "Advisor Name", "Chat Link", "Type", "Feedback"] + (["Action"] if access != "IC" else [])
         
-        if access == "IC":
-            st.dataframe(df_view, hide_index=True, use_container_width=True)
-        else:
-            st.info("💡 **Manager/Admin Action:** Click directly into the 'Feedback' cells below to type and edit feedback.")
-            edited_df = st.data_editor(
-                df_view, 
-                disabled=["Date", "Advisor Name", "DSAT chat link"], # Lock all columns EXCEPT feedback
-                hide_index=True, 
-                use_container_width=True,
-                key="dsat_editor"
-            )
+        cols = st.columns(col_w)
+        for i, h in enumerate(headers): cols[i].write(f"**{h}**")
+        
+        for idx, row in f_table.reset_index().iterrows():
+            r = st.columns(col_w)
+            date_str = str(row['date_dt'])[:10] if pd.notna(row['date_dt']) else "-"
             
-            if st.button("Save Updates"):
-                st.success("Feedback updated successfully! *(Note: Syncing directly back to the live Google Sheet requires Google API OAuth credentials).*")
+            r[0].write(date_str)
+            r[1].write(row.get('name', '-'))
+            r[2].markdown(f"[🔗 View Chat]({row.get('link', '#')})")
+            r[3].write(row.get('type') if pd.notna(row.get('type')) and str(row.get('type')) != 'nan' else "-")
+            r[4].write(row.get('feedback') if pd.notna(row.get('feedback')) and str(row.get('feedback')) != 'nan' else "-")
+            
+            # Action Button restricted to Manager / Admin
+            if access != "IC":
+                if r[5].button("Update", key=f"upd_{idx}"):
+                    open_form_dialog(row)
 
 if access != "IC":
     with tabs[2]:
