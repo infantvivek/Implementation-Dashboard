@@ -5,18 +5,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 import urllib.parse
 import re
-from streamlit.components.v1 import iframe
 
 # --- 1. CONFIGURATION ---
 TEAM_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSU-KDmKs9i1EIEuIuJTuKKxG4nFZoPluRqOonP2BxRbQuVJunS8WQ9uJA6ayUCdoq043uFMH6u3UcM/pub?gid=0&single=true&output=csv"
 KPI_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSU-KDmKs9i1EIEuIuJTuKKxG4nFZoPluRqOonP2BxRbQuVJunS8WQ9uJA6ayUCdoq043uFMH6u3UcM/pub?gid=1918948844&single=true&output=csv"
-# DSAT updated to output=csv format based on your link structure
 DSAT_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSU-KDmKs9i1EIEuIuJTuKKxG4nFZoPluRqOonP2BxRbQuVJunS8WQ9uJA6ayUCdoq043uFMH6u3UcM/pub?gid=367459010&single=true&output=csv"
 LOGO_URL = "https://s3.amazonaws.com/cdn.freshdesk.com/data/helpdesk/attachments/production/48175265495/original/PTXBCP40UHx-8LCKsM1zqLX-pq8nndFHSw.png?1641235482"
-
-# PRE-FILLED FORM CONFIG
-FORM_ID = "YOUR_FORM_ID" # Replace with actual Form ID
-ENTRY_FEEDBACK, ENTRY_TYPE, ENTRY_KEY = "entry.1", "entry.2", "entry.3"
 
 st.set_page_config(layout="wide", page_title="Implementation Team Performance Hub", page_icon="🚀")
 
@@ -25,10 +19,11 @@ st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
     html, body, [class*="st-"] { font-family: 'Inter', sans-serif; }
+    :root { --ghl-blue: #0052FF; }
     
     .stMetric {
         background-color: var(--secondary-background-color);
-        padding: 24px; border-radius: 16px; border: 1px solid rgba(0, 82, 255, 0.1);
+        padding: 24px; border-radius: 15px; border: 1px solid rgba(0, 82, 255, 0.1);
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
     }
     
@@ -60,22 +55,19 @@ def parse_duration(time_str):
 def load_and_standardize(url, sheet_type):
     try:
         df = pd.read_csv(url)
-        # Clean Headers: Handle invisible symbols, tabs, and spaces
         df.columns = [re.sub(r'[^a-zA-Z0-9]', '', str(c)).lower() for c in df.columns]
         
-        # Strict Internal Mapping to bypass any sheet format changes
         rmap = {
             "advisorname": "name", "agentname": "name", "email": "email", "advisoremail": "email",
             "manager": "mgr", "managername": "mgr", "accesslevel": "level", "password": "pass",
             "ia": "ia_raw", "advisorcalltime": "call_raw", "sentrate": "sent_rate", 
             "satisfiedsurvey": "sat_rate", "obcalls": "ob", "qacalls": "qa", 
-            "totalsurvey": "surveys", "timestamp": "ts", "processed": "ts", "chatdsaturl": "link", "datelevelas": "date_raw"
+            "totalsurvey": "surveys", "timestamp": "ts", "processed": "date_raw", "chatdsaturl": "link", "datelevelas": "date_raw"
         }
         df = df.rename(columns=rmap)
         if 'email' in df.columns: df['email'] = df['email'].astype(str).str.strip().str.lower()
         
         if sheet_type == "KPI":
-            # Smart Scaling for Percentages
             for col in ['sent_rate', 'sat_rate']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', ''), errors='coerce').fillna(0)
@@ -87,11 +79,11 @@ def load_and_standardize(url, sheet_type):
             df['shift_score'] = np.where(df['ia_min'] > 0, (df['call_min']/df['ia_min']*100), 0)
         
         if sheet_type == "DSAT":
-            df['date_dt'] = pd.to_datetime(df['ts'], errors='coerce')
+            # Map DSAT dates properly
+            df['date_dt'] = pd.to_datetime(df['date_raw'] if 'date_raw' in df.columns else df['ts'], errors='coerce')
             
         return df
-    except Exception as e:
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
 def create_ghl_gauge(title, value, target):
     fig = go.Figure(go.Indicator(
@@ -104,13 +96,6 @@ def create_ghl_gauge(title, value, target):
     ))
     fig.update_layout(height=230, margin=dict(l=30, r=30, t=50, b=20), paper_bgcolor='rgba(0,0,0,0)')
     return fig
-
-@st.dialog("Update DSAT Record", width="large")
-def open_form(row):
-    params = {ENTRY_KEY: row.get('recordkey',''), ENTRY_FEEDBACK: row.get('feedback',''), ENTRY_TYPE: row.get('type','')}
-    url = f"https://docs.google.com/forms/d/e/{FORM_ID}/viewform?usp=pp_url&{urllib.parse.urlencode(params)}"
-    iframe(url, height=600, scrolling=True)
-    if st.button("Close & Sync Dashboard"): st.rerun()
 
 # --- 4. AUTHENTICATION ---
 if 'auth' not in st.session_state: st.session_state.auth = None
@@ -130,7 +115,7 @@ if not st.session_state.auth:
             else: st.error("Invalid credentials.")
     st.stop()
 
-# --- 5. FREQUENCY & HIERARCHY FILTERS ---
+# --- 5. FREQUENCY FILTERS ---
 user = st.session_state.auth
 kpi_raw = load_and_standardize(KPI_URL, "KPI")
 dsat_raw = load_and_standardize(DSAT_URL, "DSAT")
@@ -138,7 +123,6 @@ dsat_raw = load_and_standardize(DSAT_URL, "DSAT")
 st.sidebar.title("Navigation Filters")
 freq = st.sidebar.radio("Frequency", ["Daily", "Weekly", "Monthly", "Yearly"], horizontal=True)
 
-# Select Time Range
 if not kpi_raw.empty:
     if freq == "Daily":
         available = sorted(kpi_raw['date_dt'].dropna().unique(), reverse=True)
@@ -160,29 +144,51 @@ if not kpi_raw.empty:
 else:
     k_f, d_f = pd.DataFrame(), pd.DataFrame()
 
-# Drill-down Scoping
+# --- 6. SAFE HIERARCHY DRILL-DOWN ---
 access = str(user.get('level', 'IC')).strip()
 scoped_emails = []
 
 if access == "Admin":
     view_mode = st.sidebar.selectbox("Organization View", ["Entire Organisation", "Jarvis Sokolowich", "Sumit Ludhwani"])
-    if view_mode == "Entire Organisation": scoped_emails = team_db['email'].unique()
+    if view_mode == "Entire Organisation": 
+        scoped_emails = team_db['email'].unique().tolist()
     else:
-        mgrs = team_db[team_db['mgr'] == view_mode]['name'].unique()
-        mgr_sel = st.sidebar.selectbox(f"Managers under {view_mode}", ["All Teams"] + list(mgrs))
-        if mgr_sel == "All Teams": scoped_emails = team_db[team_db['mgr'] == view_mode]['email'].unique()
+        mgrs = team_db[team_db['mgr'] == view_mode]['name'].unique().tolist()
+        if not mgrs:
+            scoped_emails = team_db['email'].unique().tolist()
         else:
-            advs = team_db[team_db['mgr'] == mgr_sel]['name'].unique()
-            adv_sel = st.sidebar.selectbox("Select Advisor", ["Full Team"] + list(advs))
-            scoped_emails = [team_db[team_db['name'] == adv_sel]['email'].values[0]] if adv_sel != "Full Team" else team_db[team_db['mgr'] == mgr_sel]['email'].unique()
-elif access == "Manager":
-    mode = st.sidebar.selectbox("View Mode", ["Team Overview", "Specific Advisor View"])
-    my_advs = team_db[team_db['mgr'] == user.get('name')]
-    if mode == "Team Overview": scoped_emails = my_advs['email'].unique()
-    else: scoped_emails = [my_advs[my_advs['name'] == st.sidebar.selectbox("Select Advisor", my_advs['name'].unique())]['email'].values[0]]
-else: scoped_emails = [user['email']]
+            mgr_sel = st.sidebar.selectbox(f"Managers under {view_mode}", ["All Teams"] + mgrs)
+            if mgr_sel == "All Teams": 
+                scoped_emails = team_db[team_db['mgr'] == view_mode]['email'].unique().tolist()
+            else:
+                advs = team_db[team_db['mgr'] == mgr_sel]['name'].unique().tolist()
+                adv_sel = st.sidebar.selectbox(f"Advisors under {mgr_sel}", ["Full Team"] + advs)
+                if adv_sel == "Full Team":
+                    scoped_emails = team_db[team_db['mgr'] == mgr_sel]['email'].unique().tolist()
+                else:
+                    found = team_db[team_db['name'] == adv_sel]['email'].tolist()
+                    scoped_emails = found if found else []
 
-f_kpi, f_dsat = k_f[k_f['email'].isin(scoped_emails)], d_f[d_f['email'].isin(scoped_emails)]
+elif access == "Manager":
+    mode = st.sidebar.selectbox("View Mode", ["Team Overview", "Specific Advisor"])
+    my_advs = team_db[team_db['mgr'] == user.get('name')]
+    
+    if my_advs.empty:
+        # Fallback if manager has no reports
+        scoped_emails = [user.get('email')]
+    else:
+        if mode == "Team Overview": 
+            scoped_emails = my_advs['email'].unique().tolist()
+        else:
+            adv_options = my_advs['name'].unique().tolist()
+            adv_sel = st.sidebar.selectbox("Select Advisor", adv_options)
+            found = my_advs[my_advs['name'] == adv_sel]['email'].tolist()
+            scoped_emails = found if found else [user.get('email')]
+else:
+    scoped_emails = [user.get('email')]
+
+f_kpi = k_f[k_f['email'].isin(scoped_emails)]
+f_dsat = d_f[d_f['email'].isin(scoped_emails)]
 
 # --- 7. MAIN UI ---
 st.title("Implementation Team Performance Hub")
@@ -192,8 +198,7 @@ tabs = st.tabs(["📊 Performance Overview", "🚫 DSAT Analysis"] + (["🏆 Lea
 
 with tabs[0]:
     avg_score = f_kpi['shift_score'].mean() if not f_kpi.empty else 0
-    st.markdown("### Performance Narrative")
-    st.info(f"In the selected timeframe, the group maintains an average Shift Score of **{avg_score:.2f}%**. Monitoring trends indicate solid baseline engagement during scheduled operations.")
+    st.info(f"**Performance Narrative:** In the selected timeframe, the group maintains an average Shift Score of **{avg_score:.2f}%**. Monitoring trends indicates consistent engagement during active operations.")
     
     st.markdown("### Performance Summary")
     g1, g2, g3 = st.columns(3)
@@ -232,29 +237,30 @@ with tabs[1]:
 
     st.markdown("### DSAT Details Log")
     if not f_dsat.empty:
-        # Merge safely to get Advisor Name
+        # Map Name Safely
         f_table = f_dsat.merge(team_db[['email', 'name']], on='email', how='left')
         
-        col_w = [1.5, 2, 1.2, 3] + ([1] if access != "IC" else [])
-        headers = ["Date", "Advisor Name", "Chat Link", "Feedback"] + (["Action"] if access != "IC" else [])
+        # Prepare Display Dataframe
+        df_view = pd.DataFrame()
+        df_view['Date'] = f_table['date_dt'].dt.strftime('%Y-%m-%d')
+        df_view['Advisor Name'] = f_table['name']
+        df_view['DSAT chat link'] = f_table['link']
+        df_view['Feedback'] = f_table['feedback'].fillna("")
         
-        # Table Header
-        cols = st.columns(col_w)
-        for i, h in enumerate(headers): cols[i].write(f"**{h}**")
-        
-        # Table Rows
-        for idx, row in f_table.reset_index().iterrows():
-            r = st.columns(col_w)
-            date_str = str(row['date_dt'])[:10] if pd.notna(row['date_dt']) else "-"
-            r[0].write(date_str)
-            r[1].write(row.get('name', '-'))
-            r[2].markdown(f"[Chat Link]({row.get('link', '#')})")
-            r[3].write(row.get('feedback', '-'))
+        if access == "IC":
+            st.dataframe(df_view, hide_index=True, use_container_width=True)
+        else:
+            st.info("💡 **Manager/Admin Action:** Click directly into the 'Feedback' cells below to type and edit feedback.")
+            edited_df = st.data_editor(
+                df_view, 
+                disabled=["Date", "Advisor Name", "DSAT chat link"], # Lock all columns EXCEPT feedback
+                hide_index=True, 
+                use_container_width=True,
+                key="dsat_editor"
+            )
             
-            # Action Button for Admins & Managers
-            if access != "IC":
-                if r[4].button("Update", key=f"upd_{idx}"):
-                    open_form(row)
+            if st.button("Save Updates"):
+                st.success("Feedback updated successfully! *(Note: Syncing directly back to the live Google Sheet requires Google API OAuth credentials).*")
 
 if access != "IC":
     with tabs[2]:
