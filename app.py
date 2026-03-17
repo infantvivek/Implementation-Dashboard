@@ -13,9 +13,9 @@ KPI_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSU-KDmKs9i1EIEuIuJTu
 DSAT_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSU-KDmKs9i1EIEuIuJTuKKxG4nFZoPluRqOonP2BxRbQuVJunS8WQ9uJA6ayUCdoq043uFMH6u3UcM/pub?gid=367459010&single=true&output=csv"
 LOGO_URL = "https://s3.amazonaws.com/cdn.freshdesk.com/data/helpdesk/attachments/production/48175265495/original/PTXBCP40UHx-8LCKsM1zqLX-pq8nndFHSw.png?1641235482"
 
-# PRE-FILLED FORM CONFIG (Update with your actual Form ID)
-FORM_ID = "YOUR_GOOGLE_FORM_ID"
-ENTRY_FEEDBACK, ENTRY_TYPE, ENTRY_ADVISOR = "entry.1", "entry.2", "entry.3"
+# PRE-FILLED FORM CONFIG
+FORM_ID = "YOUR_FORM_ID" # Replace with your actual Form ID
+ENTRY_FEEDBACK, ENTRY_TYPE, ENTRY_KEY = "entry.1", "entry.2", "entry.3"
 
 st.set_page_config(layout="wide", page_title="Implementation Team Performance Hub", page_icon="🚀")
 
@@ -24,31 +24,15 @@ st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
     html, body, [class*="st-"] { font-family: 'Inter', sans-serif; }
-    
-    /* SaaS Metric Cards */
-    .stMetric {
-        background-color: var(--secondary-background-color);
-        padding: 24px; border-radius: 15px; border: 1px solid rgba(0, 82, 255, 0.1);
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-    }
-    
-    /* Adaptive Branding Logo */
-    [data-testid="stSidebarNav"]::before {
-        content: ""; display: block; background-image: url('""" + LOGO_URL + """');
-        background-size: contain; background-repeat: no-repeat;
-        width: 170px; height: 50px; margin: 25px 0 10px 25px;
-        filter: brightness(0) invert(1); 
-    }
-    
+    :root { --ghl-blue: #0052FF; }
+    .stMetric { background-color: var(--secondary-background-color); padding: 24px; border-radius: 15px; border: 1px solid rgba(0, 82, 255, 0.1); box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+    [data-testid="stSidebarNav"]::before { content: ""; display: block; background-image: url('""" + LOGO_URL + """'); background-size: contain; background-repeat: no-repeat; width: 170px; height: 50px; margin: 25px 0 10px 25px; filter: brightness(0) invert(1); }
     .stTabs [aria-selected="true"] { background-color: #0052FF !important; color: white !important; border-radius: 8px; }
     div.stInfo { background-color: rgba(0, 82, 255, 0.05); border-left: 5px solid #0052FF; color: var(--text-color); border-radius: 10px; padding: 15px; }
-    
-    /* Table Header Styling */
-    th { background-color: rgba(0, 82, 255, 0.05) !important; }
     </style>
 """, unsafe_allow_html=True)
 
-# --- 3. ROBUST DATA PROCESSING ENGINE ---
+# --- 3. ROBUST DATA PROCESSING ---
 def parse_duration(time_str):
     if pd.isna(time_str) or not isinstance(time_str, str): return 0
     try:
@@ -64,21 +48,22 @@ def parse_duration(time_str):
 def load_and_standardize(url, sheet_type):
     try:
         df = pd.read_csv(url)
-        # Fix invisible characters/tabs in headers and standardize to internal keys
+        # 1. Clean Headers: Handle invisible symbols, tabs, and spaces
         df.columns = [re.sub(r'[^a-zA-Z0-9]', '', str(c)).lower() for c in df.columns]
         
+        # 2. Strict Internal Mapping
         rmap = {
             "advisorname": "name", "agentname": "name", "email": "email", "advisoremail": "email",
             "manager": "mgr", "managername": "mgr", "accesslevel": "level", "password": "pass",
             "ia": "ia_raw", "advisorcalltime": "call_raw", "sentrate": "sent_rate", 
             "satisfiedsurvey": "sat_rate", "obcalls": "ob", "qacalls": "qa", 
-            "totalsurvey": "surveys", "timestamp": "ts", "chatdsaturl": "link", "datelevelas": "date_raw"
+            "totalsurvey": "surveys", "timestamp": "ts", "processed": "ts", "chatdsaturl": "link", "datelevelas": "date_raw"
         }
         df = df.rename(columns=rmap)
         if 'email' in df.columns: df['email'] = df['email'].astype(str).str.strip().str.lower()
         
         if sheet_type == "KPI":
-            # Correct Percentages (Prevents 8500% bug)
+            # Fix Percentage Overflow/Underflow
             for col in ['sent_rate', 'sat_rate']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', ''), errors='coerce').fillna(0)
@@ -90,7 +75,10 @@ def load_and_standardize(url, sheet_type):
             df['shift_score'] = np.where(df['ia_min'] > 0, (df['call_min']/df['ia_min']*100), 0)
         
         if sheet_type == "DSAT":
+            # In your new file, 'ts' comes from 'processed' column if 'timestamp' is missing
             df['date_dt'] = pd.to_datetime(df['ts'], errors='coerce')
+            df['feedback'] = df['feedback'].fillna("-")
+            df['type'] = df['type'].fillna("-")
         return df
     except Exception as e:
         return pd.DataFrame()
@@ -107,12 +95,12 @@ def create_ghl_gauge(title, value, target):
     fig.update_layout(height=230, margin=dict(l=30, r=30, t=50, b=20), paper_bgcolor='rgba(0,0,0,0)')
     return fig
 
-@st.dialog("Update DSAT Analysis", width="large")
+@st.dialog("Update DSAT Feedback", width="large")
 def open_form(row):
-    params = {ENTRY_ADVISOR: row.get('name',''), ENTRY_FEEDBACK: row.get('feedback',''), ENTRY_TYPE: row.get('type','')}
+    params = {ENTRY_KEY: row.get('recordkey',''), ENTRY_FEEDBACK: row.get('feedback',''), ENTRY_TYPE: row.get('type','')}
     url = f"https://docs.google.com/forms/d/e/{FORM_ID}/viewform?usp=pp_url&{urllib.parse.urlencode(params)}"
     iframe(url, height=600, scrolling=True)
-    if st.button("Close & Sync"): st.rerun()
+    if st.button("Close & Sync Dashboard"): st.rerun()
 
 # --- 4. AUTHENTICATION & DATA FETCH ---
 if 'auth' not in st.session_state: st.session_state.auth = None
@@ -137,16 +125,18 @@ kpi_raw = load_and_standardize(KPI_URL, "KPI")
 dsat_raw = load_and_standardize(DSAT_URL, "DSAT")
 
 # --- 5. FREQUENCY & HIERARCHY FILTERS ---
-st.sidebar.title("Data Controls")
+st.sidebar.title("Navigation Filters")
 freq = st.sidebar.radio("Frequency", ["Daily", "Weekly", "Monthly", "Yearly"], horizontal=True)
 
 # Select Time Range
 if freq == "Daily":
-    sel = st.sidebar.selectbox("Select Date", sorted(kpi_raw['date_dt'].dropna().unique(), reverse=True), format_func=lambda x: x.strftime('%d-%m-%Y'))
+    available = sorted(kpi_raw['date_dt'].dropna().unique(), reverse=True)
+    sel = st.sidebar.selectbox("Select Date", available, format_func=lambda x: x.strftime('%d-%m-%Y'))
     k_f, d_f = kpi_raw[kpi_raw['date_dt'] == sel], dsat_raw[dsat_raw['date_dt'].dt.date == sel.date()]
 elif freq == "Weekly":
     kpi_raw['wk'] = kpi_raw['date_dt'].dt.to_period('W').apply(lambda r: r.start_time)
-    sel = st.sidebar.selectbox("Select Week", sorted(kpi_raw['wk'].dropna().unique(), reverse=True), format_func=lambda x: x.strftime('%d-%m-%Y'))
+    available = sorted(kpi_raw['wk'].dropna().unique(), reverse=True)
+    sel = st.sidebar.selectbox("Select Week", available, format_func=lambda x: x.strftime('%d-%m-%Y'))
     k_f, d_f = kpi_raw[kpi_raw['wk'] == sel], dsat_raw[(dsat_raw['date_dt'] >= sel) & (dsat_raw['date_dt'] < sel + pd.Timedelta(days=7))]
 else:
     kpi_raw['mo'] = kpi_raw['date_dt'].dt.strftime('%B %Y')
@@ -173,26 +163,24 @@ elif access == "Manager":
     my_advs = team_db[team_db['mgr'] == user['name']]
     if mode == "Team Overview": scoped_emails = my_advs['email'].unique()
     else: scoped_emails = [my_advs[my_advs['name'] == st.sidebar.selectbox("Select Advisor", my_advs['name'].unique())]['email'].values[0]]
-else:
-    scoped_emails = [user['email']]
+else: scoped_emails = [user['email']]
 
 f_kpi, f_dsat = k_f[k_f['email'].isin(scoped_emails)], d_f[d_f['email'].isin(scoped_emails)]
 
-# --- 6. UI CONTENT ---
-st.title("Implementation Team Performance Hub")
-st.info(f"Welcome **{user['name']}**!! | Access Level : **{access}**")
+# --- 6. MAIN UI ---
+st.title("Performance Hub Dashboard")
+st.success(f"Welcome **{user['name']}**!! | Access Level : **{access}**")
 
-tabs = st.tabs(["Performance Overview", "DSAT Analysis"] + (["Leaderboard"] if access != "IC" else []))
+tabs = st.tabs(["📊 Performance Overview", "🚫 DSAT Analysis"] + (["🏆 Leaderboard"] if access != "IC" else []))
 
 with tabs[0]:
     avg_score = f_kpi['shift_score'].mean() if not f_kpi.empty else 0
-    st.markdown("### Performance Narrative")
-    st.info(f"The group is performing with an average Shift Score of **{avg_score:.2f}%**. Monitoring trends suggest consistent engagement across outbound activities.")
+    st.info(f"**Performance Narrative:** In the selected period, the average Shift Score is **{avg_score:.2f}%**. Monitoring trends suggest consistent engagement across outbound activities.")
     
     g1, g2, g3 = st.columns(3)
-    active_kpi = f_kpi[f_kpi['surveys'] > 0]
-    avg_sent = active_kpi['sent_rate'].mean() if not active_kpi.empty else 0
-    avg_sat = active_kpi['sat_rate'].mean() if not active_kpi.empty else 0
+    active_surveys = f_kpi[f_kpi['surveys'] > 0]
+    avg_sent = active_surveys['sent_rate'].mean() if not active_surveys.empty else 0
+    avg_sat = active_surveys['sat_rate'].mean() if not active_surveys.empty else 0
     
     g1.plotly_chart(create_ghl_gauge("Avg Survey Sent", avg_sent, 85), use_container_width=True)
     g2.plotly_chart(create_ghl_gauge("Avg Satisfied Survey", avg_sat, 90), use_container_width=True)
@@ -202,23 +190,21 @@ with tabs[0]:
     m1.metric("Total OB Calls", f"{int(f_kpi['ob'].sum()):,}")
     m2.metric("Total OH Calls (QA)", f"{int(f_kpi['qa'].sum()):,}")
 
-    st.markdown("### Performance Trends")
     if not f_kpi.empty:
         trend = f_kpi.groupby('date_dt').agg({'sent_rate':'mean', 'sat_rate':'mean', 'shift_score':'mean', 'ob':'sum', 'qa':'sum'}).reset_index().sort_values('date_dt')
         st.plotly_chart(px.line(trend, x='date_dt', y=['sent_rate', 'sat_rate'], title="Survey Trends (%)", markers=True), use_container_width=True)
-        st.plotly_chart(px.line(trend, x='date_dt', y='shift_score', title="Shift Score Trend (%)", markers=True), use_container_width=True)
-        st.plotly_chart(px.bar(trend, x='date_dt', y=['ob', 'qa'], title="Call Volume", barmode='group'), use_container_width=True)
+        st.plotly_chart(px.bar(trend, x='date_dt', y=['ob', 'qa'], title="Call Volume (OB vs OH)", barmode='group'), use_container_width=True)
 
 with tabs[1]:
     st.markdown("### DSAT Summary")
     pending = len(f_dsat[f_dsat['feedback'].isin(["", "-", np.nan])])
     s1, s2, s3, s4 = st.columns(4)
     s1.metric("Total DSAT", f"{len(f_dsat)}")
-    s2.metric("Feedback Pending", f"{pending}")
+    s2.metric("Pending Feedback", f"{pending}")
     s3.metric("Controllable", f"{len(f_dsat[f_dsat['type'] == 'Controllable'])}")
     s4.metric("Uncontrollable", f"{len(f_dsat[f_dsat['type'] == 'Uncontrollable'])}")
 
-    st.markdown("### DSAT Details")
+    st.markdown("### DSAT Audit Log")
     if not f_dsat.empty:
         f_view = f_dsat.merge(team_db[['email', 'name', 'mgr']], on='email', how='left')
         col_w = [1.5, 2, 1.5, 1, 1.2, 2.5] + ([1] if access != "IC" else [])
@@ -228,8 +214,7 @@ with tabs[1]:
         for idx, row in f_view.reset_index().iterrows():
             r = st.columns(col_w)
             r[0].write(str(row['ts'])[:10]); r[1].write(row['name_y']); r[2].write(row['mgr_y'])
-            r[3].markdown(f"[Link]({row['link']})"); r[4].write(row['type'] if pd.notna(row['type']) else "-")
-            r[5].write(row['feedback'] if pd.notna(row['feedback']) else "-")
+            r[3].markdown(f"[Link]({row['link']})"); r[4].write(row['type']); r[5].write(row['feedback'])
             if access != "IC" and r[6].button("Update", key=f"upd_{idx}"): open_form(row)
 
 if access != "IC":
