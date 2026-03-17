@@ -73,15 +73,18 @@ def load_and_standardize(url, sheet_type):
         if 'email' in df.columns: df['email'] = df['email'].astype(str).str.strip().str.lower()
         
         if sheet_type == "KPI":
+            # FIX: We NO LONGER fillna(0). Blanks stay NaN so .mean() calculations ignore them perfectly.
             for col in ['sent_rate', 'sat_rate']:
                 if col in df.columns:
-                    df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', ''), errors='coerce').fillna(0)
+                    df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', ''), errors='coerce')
                     if df[col].max() <= 1.1: df[col] = df[col] * 100
             
             df['date_dt'] = pd.to_datetime(df['date_raw'], format="%b'%d'%y", errors='coerce')
             df['ia_min'] = df['ia_raw'].apply(parse_duration) if 'ia_raw' in df.columns else 0
             df['call_min'] = df['call_raw'].apply(parse_duration) if 'call_raw' in df.columns else 0
-            df['shift_score'] = np.where(df['ia_min'] > 0, (df['call_min']/df['ia_min']*100), 0)
+            
+            # FIX: If IA is 0, shift score is NaN (blank), preventing 0s from skewing the true average.
+            df['shift_score'] = np.where(df['ia_min'] > 0, (df['call_min']/df['ia_min']*100), np.nan)
         
         if sheet_type == "DSAT":
             df['date_dt'] = pd.to_datetime(df['date_raw'] if 'date_raw' in df.columns else df['ts_raw'], errors='coerce')
@@ -220,6 +223,7 @@ elif access == "Manager":
 else:
     scoped_emails = [user.get('email')]
 
+# FIX: `f_kpi` filters data to strictly display ONLY the scoped emails defined above.
 f_kpi = k_f[k_f['email'].isin(scoped_emails)]
 f_dsat = d_f[d_f['email'].isin(scoped_emails)]
 
@@ -230,22 +234,24 @@ st.success(f"Welcome **{user.get('name', 'User')}**!! | Access Level : **{access
 tabs = st.tabs(["📊 Performance Overview", "🚫 DSAT Analysis & Feedback"] + (["🏆 Leaderboards"] if access != "IC" else []))
 
 with tabs[0]:
-    avg_score = f_kpi['shift_score'].mean() if not f_kpi.empty else 0
+    # Averages safely ignore NaNs (Blanks)
+    avg_score = f_kpi['shift_score'].dropna().mean() if not f_kpi['shift_score'].dropna().empty else 0
+    
     st.markdown("### Performance Narrative")
     st.info(f"In the selected timeframe, the group maintains an average Shift Score of **{avg_score:.2f}%**. Monitoring trends indicate consistent engagement during active operations.")
     
     st.markdown("### Performance Summary")
     c1, c2, c3, c4, c5 = st.columns(5)
-    active_surveys = f_kpi[f_kpi['surveys'] > 0]
-    avg_sent = active_surveys['sent_rate'].mean() if not active_surveys.empty else 0
-    avg_sat = active_surveys['sat_rate'].mean() if not active_surveys.empty else 0
+    
+    avg_sent = f_kpi['sent_rate'].dropna().mean() if not f_kpi['sent_rate'].dropna().empty else 0
+    avg_sat = f_kpi['sat_rate'].dropna().mean() if not f_kpi['sat_rate'].dropna().empty else 0
     tot_ob = int(f_kpi['ob'].sum()) if not f_kpi.empty else 0
     tot_qa = int(f_kpi['qa'].sum()) if not f_kpi.empty else 0
     
     # Custom Number Blocks with Target Indication
-    c1.markdown(create_metric_card("Survey Sent", avg_sent, 85, True), unsafe_allow_html=True)
-    c2.markdown(create_metric_card("Satisfied Survey", avg_sat, 90, True), unsafe_allow_html=True)
-    c3.markdown(create_metric_card("Shift Score", avg_score, 85, True), unsafe_allow_html=True)
+    c1.markdown(create_metric_card("Avg Survey Sent", avg_sent, 85, True), unsafe_allow_html=True)
+    c2.markdown(create_metric_card("Avg Satisfied Survey", avg_sat, 90, True), unsafe_allow_html=True)
+    c3.markdown(create_metric_card("Avg Shift Score", avg_score, 85, True), unsafe_allow_html=True)
     c4.markdown(create_metric_card("Total OB Calls", tot_ob, None, False), unsafe_allow_html=True)
     c5.markdown(create_metric_card("Total QA Calls", tot_qa, None, False), unsafe_allow_html=True)
 
@@ -274,38 +280,61 @@ with tabs[1]:
 
     st.markdown("### DSAT Details & Feedback")
     if not f_dsat.empty:
-        f_table = f_dsat.merge(team_db[['email', 'name']], on='email', how='left')
+        f_table = f_dsat.merge(team_db[['email', 'name', 'mgr']], on='email', how='left')
         
-        col_w = [1.5, 2, 2.5, 1.5, 3] + ([1.5] if access != "IC" else [])
-        headers = ["Date", "Advisor Name", "DSAT Chat Link", "Type", "Feedback"] + (["Action"] if access != "IC" else [])
+        # FIX: Dynamic Columns - Manager only shows up for Admins
+        headers = ["Date", "Advisor Name"]
+        col_w = [1.5, 2]
         
-        # Table Header
+        if access == "Admin":
+            headers.append("Manager")
+            col_w.append(1.5)
+            
+        headers.extend(["DSAT Chat Link", "Type", "Feedback"])
+        col_w.extend([2.5, 1.5, 3])
+        
+        if access != "IC":
+            headers.append("Action")
+            col_w.append(1.5)
+        
+        # Render Table Header
         header_cols = st.columns(col_w)
         for i, h in enumerate(headers): header_cols[i].write(f"**{h}**")
         st.divider()
         
-        # Table Rows
+        # Render Table Rows
         for idx, row in f_table.reset_index().iterrows():
             r = st.columns(col_w)
             date_str = str(row['date_dt'])[:10] if pd.notna(row['date_dt']) else "-"
             fb = row.get('feedback', '-')
             tp = row.get('type', '-')
             
-            r[0].write(date_str)
-            r[1].write(row.get('name', '-'))
-            r[2].markdown(f"[🔗 View Chat Context]({row.get('link', '#')})")
-            r[3].write(tp if str(tp) != 'nan' else "-")
-            r[4].write(fb if str(fb) != 'nan' else "-")
+            c_idx = 0
+            r[c_idx].write(date_str); c_idx += 1
+            r[c_idx].write(row.get('name', '-')); c_idx += 1
             
-            # Action Button restricted to Manager / Admin
+            if access == "Admin":
+                r[c_idx].write(row.get('mgr', '-')); c_idx += 1
+                
+            r[c_idx].markdown(f"[🔗 View Chat Context]({row.get('link', '#')})"); c_idx += 1
+            r[c_idx].write(tp if str(tp) != 'nan' and tp != "" else "-"); c_idx += 1
+            r[c_idx].write(fb if str(fb) != 'nan' and fb != "" else "-"); c_idx += 1
+            
             if access != "IC":
-                if r[5].button("📝 Update", key=f"upd_{idx}"):
+                if r[c_idx].button("📝 Update", key=f"upd_{idx}"):
                     open_form_dialog(row)
 
 if access != "IC":
     with tabs[2]:
-        if not k_f.empty:
-            ldb = k_f.groupby('name').agg({'sent_rate':'mean', 'sat_rate':'mean', 'qa':'sum', 'ob':'sum'}).reset_index().round(2)
+        if not f_kpi.empty:
+            # FIX: Grouping strictly by f_kpi ensures the leaderboard matches the user's specific Admin/Manager filter selections.
+            ldb = f_kpi.groupby('name').agg({'sent_rate':'mean', 'sat_rate':'mean', 'qa':'sum', 'ob':'sum'}).reset_index()
+            
+            # Fill remaining NaN with 0 only for final UI display
+            ldb['sent_rate'] = ldb['sent_rate'].fillna(0).round(2)
+            ldb['sat_rate'] = ldb['sat_rate'].fillna(0).round(2)
+            ldb['qa'] = ldb['qa'].fillna(0)
+            ldb['ob'] = ldb['ob'].fillna(0)
             
             st.markdown("### 🏆 Success Champions")
             st.caption("Advisors maintaining an Avg Survey Sent ≥ 85.00% AND Avg Satisfied Survey ≥ 90.00%.")
