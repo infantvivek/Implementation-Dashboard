@@ -32,7 +32,6 @@ st.markdown("""
     .stTabs [aria-selected="true"] { background-color: #0052FF !important; color: white !important; }
     div.stInfo { background-color: rgba(0, 82, 255, 0.08); border-left: 5px solid #0052FF; color: var(--text-color); border-radius: 10px; }
     
-    /* SIDEBAR LOGO INVERT FOR DARK MODE */
     [data-testid="stSidebarNav"]::before {
         content: "";
         display: block;
@@ -107,7 +106,7 @@ def load_data(url, sheet_type=None):
             for col in ['Sent Rate %', 'Satisfied Survey %', 'Total Survey', 'Q/A Calls', 'OB Calls']:
                 if col in df.columns: df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', '').str.strip(), errors='coerce').fillna(0)
         return df
-    except Exception as e: return pd.DataFrame()
+    except Exception: return pd.DataFrame()
 
 # --- 5. AUTH ---
 if 'auth' not in st.session_state: st.session_state.auth = None
@@ -126,8 +125,6 @@ if not st.session_state.auth:
 
 # --- 6. DATA PREP ---
 user, kpi_raw, dsat_raw, team_db = st.session_state.auth, load_data(KPI_URL, "KPI"), load_data(DSAT_URL, "DSAT"), load_data(TEAM_URL, "TEAM")
-level = user.get('Access Level', 'IC') 
-
 kpi_raw['Date_Parsed'] = pd.to_datetime(kpi_raw['Date'], format="%b'%d'%y", errors='coerce')
 dsat_raw['Date_Parsed'] = pd.to_datetime(dsat_raw['Timestamp'], errors='coerce')
 if 'Processed' in dsat_raw.columns: dsat_raw = dsat_raw[dsat_raw['Processed'] != 'DUPLICATE']
@@ -154,6 +151,7 @@ else:
     f_kpi_t, f_dsat_t = kpi_raw[kpi_raw['Year_Label'] == sel], dsat_raw[kpi_raw['Date_Parsed'].dt.year == sel]
 
 # Scoping
+level = user.get('Access Level', 'IC')
 if level == "Admin":
     sr_mgr = st.sidebar.selectbox("Sr. Manager Team", ["Entire Organization", "Jarvis Sokolowich", "Sumit Ludhwani"])
     if sr_mgr != "Entire Organization":
@@ -179,13 +177,22 @@ with tabs[0]:
     avg_sat = f_kpi[f_kpi['Total Survey'] > 0]['Satisfied Survey %'].mean() if not f_kpi.empty else 0
     total_ob, total_qa = f_kpi['OB Calls'].sum() if not f_kpi.empty else 0, f_kpi['Q/A Calls'].sum() if not f_kpi.empty else 0
     
-    # Hero Gauges
+    st.info(f"Summary: Quality: **{avg_sat:.2f}%** | Sent Rate: **{avg_sent:.2f}%** | Shift Score: **{avg_score:.2f}%**")
+    
+    # 1. NEW DSAT SUMMARY SECTION
+    pending_count = len(f_dsat[f_dsat['Feedback'].isna() | (f_dsat['Feedback'].astype(str).str.strip() == "")])
+    ds1, ds2, ds3, ds4 = st.columns(4)
+    ds1.metric("Total DSATs", len(f_dsat))
+    ds2.metric("Feedback Pending", pending_count, delta=f"{pending_count} Unactioned", delta_color="inverse")
+    ds3.metric("Controllable", len(f_dsat[f_dsat['Type'] == 'Controllable']))
+    ds4.metric("Uncontrollable", len(f_dsat[f_dsat['Type'] == 'Uncontrollable']))
+    st.write("---")
+
     c1, c2, c3 = st.columns(3)
     c1.plotly_chart(create_ghl_gauge("Avg Shift Score", avg_score, 85, color_steps=True), use_container_width=True)
     c2.plotly_chart(create_ghl_gauge("Avg Sent Rate %", avg_sent, 85, color_steps=True), use_container_width=True)
     c3.plotly_chart(create_ghl_gauge("Avg Satisfied %", avg_sat, 90, color_steps=True), use_container_width=True)
 
-    # Exact Value Gauges
     v1, v2 = st.columns(2)
     v1.plotly_chart(create_ghl_gauge("Total OB Calls", int(total_ob), is_percent=False), use_container_width=True)
     v2.plotly_chart(create_ghl_gauge("Total QA Calls", int(total_qa), is_percent=False), use_container_width=True)
@@ -210,17 +217,13 @@ with tabs[1]:
         h_cols = st.columns(col_w)
         for i, h in enumerate(headers): h_cols[i].write(f"**{h}**")
 
-        # FIXED: Enumerate to provide a unique index for the key
         for idx, row in f_dsat.reset_index().iterrows():
             fb = row['Feedback'] if pd.notna(row['Feedback']) and str(row['Feedback']).strip() != "" else "-"
             tp = row['Type'] if pd.notna(row['Type']) and str(row['Type']).strip() != "" else "-"
             r = st.columns(col_w)
             r[0].write(str(row['Timestamp'])[:10]); r[1].write(row['Advisor Name']); r[2].write(row.get('Manager Name', 'N/A'))
             r[3].markdown(f"[Chat]({row['DSAT chat link']})"); r[4].write(tp); r[5].write(fb)
-            
-            # UNIQUE KEY FIX: Added idx to the button key string
-            if r[6].button("Update", key=f"btn_{idx}_{row['RecordKey']}"): 
-                open_form_dialog(generate_form_url(row))
+            if r[6].button("Update", key=f"btn_{idx}_{row['RecordKey']}"): open_form_dialog(generate_form_url(row))
 
 with tabs[2]:
     st.markdown("### 🏆 Team Leaderboards")
