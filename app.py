@@ -227,7 +227,7 @@ f_dsat = d_f[d_f['email'].isin(scoped_emails)]
 st.title("Implementation Team Performance Hub")
 st.success(f"Welcome **{user.get('name', 'User')}**!! | Access Level : **{access}**")
 
-tabs = st.tabs(["📊 Performance Overview", "🚫 DSAT Analysis & Feedback"] + (["🏆 Leaderboard"] if access != "IC" else []))
+tabs = st.tabs(["📊 Performance Overview", "🚫 DSAT Analysis & Feedback"] + (["🏆 Leaderboards"] if access != "IC" else []))
 
 with tabs[0]:
     avg_score = f_kpi['shift_score'].mean() if not f_kpi.empty else 0
@@ -276,7 +276,6 @@ with tabs[1]:
     if not f_dsat.empty:
         f_table = f_dsat.merge(team_db[['email', 'name']], on='email', how='left')
         
-        # Interactive Layout using st.columns to allow button injection
         col_w = [1.5, 2, 2.5, 1.5, 3] + ([1.5] if access != "IC" else [])
         headers = ["Date", "Advisor Name", "DSAT Chat Link", "Type", "Feedback"] + (["Action"] if access != "IC" else [])
         
@@ -305,24 +304,37 @@ with tabs[1]:
 
 if access != "IC":
     with tabs[2]:
-        st.markdown("### 🏆 Compact Performance Leaderboard")
-        st.caption("Organized comprehensive view of all team members. (Success Champions: Avg Survey Sent ≥ 85.00% AND Avg Satisfied Survey ≥ 90.00%)")
-        
         if not k_f.empty:
-            ldb = k_f.groupby('name').agg({'sent_rate':'mean', 'sat_rate':'mean', 'qa':'sum', 'ob':'sum'}).reset_index()
+            ldb = k_f.groupby('name').agg({'sent_rate':'mean', 'sat_rate':'mean', 'qa':'sum', 'ob':'sum'}).reset_index().round(2)
             
-            # Identify Champions
-            ldb['Champion'] = np.where((ldb['sent_rate'] >= 85) & (ldb['sat_rate'] >= 90), "⭐ Yes", "")
+            st.markdown("### 🏆 Success Champions")
+            st.caption("Advisors maintaining an Avg Survey Sent ≥ 85.00% AND Avg Satisfied Survey ≥ 90.00%.")
+            champs = ldb[(ldb['sent_rate'] >= 85) & (ldb['sat_rate'] >= 90)].sort_values('sat_rate', ascending=False)
             
-            # Formatting
-            ldb = ldb.rename(columns={'name': 'Advisor Name', 'sent_rate': 'Survey Sent %', 'sat_rate': 'Satisfied %', 'qa': 'QA Calls', 'ob': 'OB Calls'})
-            ldb['Survey Sent %'] = ldb['Survey Sent %'].round(2).astype(str) + "%"
-            ldb['Satisfied %'] = ldb['Satisfied %'].round(2).astype(str) + "%"
+            if not champs.empty:
+                st.dataframe(champs[['name', 'sat_rate', 'sent_rate']].rename(columns={'name': 'Advisor Name', 'sat_rate': 'Satisfied %', 'sent_rate': 'Survey Sent %'}), hide_index=True, use_container_width=True)
+            else:
+                st.info("No Success Champions met the criteria in this period.")
+
+            st.markdown("---")
             
-            # Reorder columns
-            ldb = ldb[['Advisor Name', 'Survey Sent %', 'Satisfied %', 'QA Calls', 'OB Calls', 'Champion']]
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("#### 📈 Survey Sent %")
+                st.dataframe(ldb.sort_values('sent_rate', ascending=False)[['name', 'sent_rate']].rename(columns={'name': 'Advisor Name', 'sent_rate': 'Survey Sent %'}), hide_index=True, use_container_width=True)
+            with c2:
+                st.markdown("#### ⭐ Satisfied Survey %")
+                st.dataframe(ldb.sort_values('sat_rate', ascending=False)[['name', 'sat_rate']].rename(columns={'name': 'Advisor Name', 'sat_rate': 'Satisfied %'}), hide_index=True, use_container_width=True)
+                
+            st.markdown("---")
             
-            st.dataframe(ldb, hide_index=True, use_container_width=True)
+            c3, c4 = st.columns(2)
+            with c3:
+                st.markdown("#### 📞 Top QA Guru")
+                st.dataframe(ldb.sort_values('qa', ascending=False)[['name', 'qa']].rename(columns={'name': 'Advisor Name', 'qa': 'Total QA Calls'}), hide_index=True, use_container_width=True)
+            with c4:
+                st.markdown("#### 🚀 OB Expert")
+                st.dataframe(ldb.sort_values('ob', ascending=False)[['name', 'ob']].rename(columns={'name': 'Advisor Name', 'ob': 'Total OB Calls'}), hide_index=True, use_container_width=True)
 
 st.sidebar.divider()
 if st.sidebar.button("Logout"): st.session_state.auth = None; st.rerun()
