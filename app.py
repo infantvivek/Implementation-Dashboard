@@ -38,14 +38,13 @@ def generate_form_url(row):
     params = {ENTRY_KEY: row.get('RecordKey',''), ENTRY_FEEDBACK: row.get('Feedback',''), ENTRY_TYPE: row.get('Type','')}
     return f"{base}&{urllib.parse.urlencode(params)}"
 
-# --- 3. ROBUST DATA LOADING ---
+# --- 3. DATA LOADING ---
 @st.cache_data(ttl=60)
 def load_data(url, sheet_type=None):
     try:
         df = pd.read_csv(url)
         df.columns = df.columns.astype(str).str.strip().str.replace('\ufeff', '').str.replace('"', '')
         
-        # Mapping Engine based on file analysis
         mappings = {
             "KPI": {"Date_level - AS": "Date", "Agent Name": "Advisor Name", "IA": "IA_Hours", "Advisor Call Time ": "Advisor Call Time", "Manager": "Manager Name"},
             "TEAM": {"Manager": "Manager Name", "Access level": "Access Level", "Advisor Email": "Email"},
@@ -158,7 +157,7 @@ with tabs[0]:
     m[3].metric("Avg Satisfied Survey", f"{avg_sat:.2f}%")
     m[4].metric("Total Survey", int(f_kpi['Total Survey'].sum()) if not f_kpi.empty else 0)
 
-    # 4-Trend Analysis
+    # Trends
     ca, cb = st.columns(2)
     chart_d = f_kpi.groupby('Date_Parsed').mean(numeric_only=True).reset_index() if not f_kpi.empty else pd.DataFrame()
     with ca:
@@ -170,48 +169,51 @@ with tabs[0]:
 
 with tabs[1]:
     st.markdown("### 🚫 DSAT Analysis & Summary")
-    # Summary Section
     s1, s2, s3 = st.columns(3)
     s1.metric("Total Received", len(f_dsat))
     s2.metric("Controllable", len(f_dsat[f_dsat['Type'] == 'Controllable']) if 'Type' in f_dsat.columns else 0)
     s3.metric("Uncontrollable", len(f_dsat[f_dsat['Type'] == 'Uncontrollable']) if 'Type' in f_dsat.columns else 0)
     
     if not f_dsat.empty:
-        if level in ["Manager", "Admin"]: f_dsat['Update Action'] = f_dsat.apply(generate_form_url, axis=1)
-        # Column selection
-        target_cols = ['Timestamp', 'DSAT chat link', 'Feedback', 'Type'] + (['Update Action'] if level in ["Manager", "Admin"] else [])
+        # SELECTOR FOR ACTION BUTTON
+        st.write("---")
+        if level in ["Manager", "Admin"]:
+            st.subheader("Action Center")
+            selected_row_name = st.selectbox("Select Record to Provide Feedback", f_dsat['Advisor Name'].unique() + " - " + f_dsat['Timestamp'].astype(str))
+            
+            # Identify the actual row
+            row_idx = f_dsat[(f_dsat['Advisor Name'] + " - " + f_dsat['Timestamp'].astype(str)) == selected_row_name].index[0]
+            selected_row = f_dsat.loc[row_idx]
+            
+            # RENDER THE BUTTON
+            form_link = generate_form_url(selected_row)
+            st.link_button("🚀 Submit Feedback / Update Type", form_link, use_container_width=True)
+            st.write("---")
+
+        # DISPLAY TABLE
+        target_cols = ['Timestamp', 'Advisor Name', 'DSAT chat link', 'Feedback', 'Type']
         df_v = f_dsat[[c for c in target_cols if c in f_dsat.columns]].copy()
-        if 'Timestamp' in df_v.columns: df_v.rename(columns={'Timestamp': 'Date'}, inplace=True)
-        
-        st.dataframe(df_v, column_config={
-            "DSAT chat link": st.column_config.LinkColumn("View Chat"),
-            "Update Action": st.column_config.LinkColumn("Submit Feedback/Type")
-        }, hide_index=True, use_container_width=True)
+        df_v.rename(columns={'Timestamp': 'Date'}, inplace=True)
+        st.dataframe(df_v, column_config={"DSAT chat link": st.column_config.LinkColumn("View Chat")}, hide_index=True, use_container_width=True)
     else:
-        st.write("No DSAT records found for this selection.")
+        st.write("No DSAT records found.")
 
 if level in ["Manager", "Admin"] and len(tabs) > 2:
     with tabs[2]:
         st.markdown("#### 🏆 Leaderboards")
         st.caption("Criteria: Survey Sent Rate ≥ 85% and Satisfied Survey > 90% (Excludes 0-survey days)")
-        # Filter 0 survey days for quality leaderboards
         ldb = f_kpi[f_kpi['Total Survey'] > 0].groupby('Advisor Name').agg({'Sent Rate %':'mean','Satisfied Survey %':'mean'}).reset_index()
         ldb_vol = f_kpi.groupby('Advisor Name').agg({'Q/A Calls':'sum','OB Calls':'sum'}).reset_index()
-        
         l1, l2, l3 = st.columns(3)
         with l1:
             st.write("**Success Champions**")
             sc = ldb[(ldb['Sent Rate %'] >= 85) & (ldb['Satisfied Survey %'] > 90)].sort_values(['Satisfied Survey %','Sent Rate %'], ascending=False)
             st.dataframe(sc[['Advisor Name', 'Satisfied Survey %', 'Sent Rate %']].round(2), hide_index=True)
         with l2:
-            st.write("**Avg Satisfied Survey %**")
-            st.dataframe(ldb.sort_values('Satisfied Survey %', ascending=False)[['Advisor Name', 'Satisfied Survey %']].round(2), hide_index=True)
-            st.write("**Avg Survey Sent %**")
-            st.dataframe(ldb.sort_values('Sent Rate %', ascending=False)[['Advisor Name', 'Sent Rate %']].round(2), hide_index=True)
+            st.write("**Avg Satisfied Survey %**"); st.dataframe(ldb.sort_values('Satisfied Survey %', ascending=False)[['Advisor Name', 'Satisfied Survey %']].round(2), hide_index=True)
+            st.write("**Avg Survey Sent %**"); st.dataframe(ldb.sort_values('Sent Rate %', ascending=False)[['Advisor Name', 'Sent Rate %']].round(2), hide_index=True)
         with l3:
-            st.write("**Total QA Calls**")
-            st.dataframe(ldb_vol.sort_values('Q/A Calls', ascending=False)[['Advisor Name', 'Q/A Calls']], hide_index=True)
-            st.write("**Total OB Calls**")
-            st.dataframe(ldb_vol.sort_values('OB Calls', ascending=False)[['Advisor Name', 'OB Calls']], hide_index=True)
+            st.write("**Total QA Calls**"); st.dataframe(ldb_vol.sort_values('Q/A Calls', ascending=False)[['Advisor Name', 'Q/A Calls']], hide_index=True)
+            st.write("**Total OB Calls**"); st.dataframe(ldb_vol.sort_values('OB Calls', ascending=False)[['Advisor Name', 'OB Calls']], hide_index=True)
 
 st.sidebar.divider(); st.sidebar.button("Logout", on_click=lambda: st.session_state.update({'auth': None}))
