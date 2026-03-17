@@ -19,7 +19,7 @@ ENTRY_KEY, ENTRY_FEEDBACK, ENTRY_TYPE = "entry.1", "entry.2", "entry.3"
 
 st.set_page_config(layout="wide", page_title="Implementation Team Performance Hub")
 
-# --- 2. GHL DYNAMIC THEME (DARK/LIGHT MODE) ---
+# --- 2. GHL DYNAMIC THEME ---
 st.markdown("""
     <style>
     .stMetric { background-color: var(--secondary-background-color); padding: 20px; border-radius: 12px; border-left: 5px solid #0052FF; }
@@ -49,7 +49,7 @@ def parse_time(time_str):
 def load_and_standardize(url, sheet_type):
     try:
         df = pd.read_csv(url)
-        # Clean Headers: Remove BOM, strip, convert ALL whitespace (tabs/spaces) to underscores, and lowercase
+        # Clean Headers: Strip, lowercase, and underscores
         df.columns = [re.sub(r'\s+', '_', str(c).strip().replace('\ufeff', '').replace('"', '')).lower() for c in df.columns]
         
         # Internal Field Mapping
@@ -66,11 +66,18 @@ def load_and_standardize(url, sheet_type):
         if 'email' in df.columns:
             df['email'] = df['email'].astype(str).str.strip().str.lower()
         
+        # FIXED: Robust Numeric Conversion for KPI metrics
         if sheet_type == "KPI":
+            metric_cols = ['sent_rate_%', 'satisfied_survey_%', 'qa_calls', 'ob_calls', 'total_survey']
+            for col in metric_cols:
+                if col in df.columns:
+                    # Remove '%' symbols if any and convert to numeric, turning errors into 0
+                    df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', ''), errors='coerce').fillna(0)
+            
             df['ia_mins'] = df['ia_time'].apply(parse_time) if 'ia_time' in df.columns else 0
             df['call_mins'] = df['call_time'].apply(parse_time) if 'call_time' in df.columns else 0
             df['shift_score'] = np.where(df['ia_mins'] > 0, (df['call_mins']/df['ia_mins']*100), 0)
-            # Use the standardized date field
+            
             date_col = 'date_level_-_as'
             if date_col in df.columns:
                 df['date_parsed'] = pd.to_datetime(df[date_col], format="%b'%d'%y", errors='coerce')
@@ -152,7 +159,7 @@ elif access == "Manager":
         adv_sel = st.sidebar.selectbox("Select Advisor", list(advs))
         emails_to_filter = [team_db[team_db['advisor_name'] == adv_sel]['email'].values[0]]
 
-else: # IC
+else: # IC Level
     emails_to_filter = [user['email']]
 
 f_kpi = kpi_raw[kpi_raw['email'].isin(emails_to_filter)]
@@ -169,12 +176,17 @@ tabs = st.tabs(tabs_list)
 with tabs[0]:
     st.markdown("### Performance Narrative")
     avg_score = f_kpi['shift_score'].mean() if not f_kpi.empty else 0
-    st.info(f"The group is currently maintaining a Shift Score of {avg_score:.2f}%. Monitoring shows active engagement in OB calls.")
+    st.info(f"The group is currently maintaining a Shift Score of {avg_score:.2f}%. Monitoring shows consistent engagement in daily operations.")
     
     st.markdown("### Performance Summary")
     g1, g2, g3 = st.columns(3)
-    avg_sent = (f_kpi['sent_rate_%'].mean() * 100) if not f_kpi.empty else 0
-    avg_sat = (f_kpi['satisfied_survey_%'].mean() * 100) if not f_kpi.empty else 0
+    # Scale percentages: if values are decimals (0.85), multiply by 100. If they are already whole numbers (85.0), keep as is.
+    raw_avg_sent = f_kpi[f_kpi['total_survey'] > 0]['sent_rate_%'].mean() if not f_kpi.empty else 0
+    avg_sent = (raw_avg_sent * 100) if raw_avg_sent <= 1 else raw_avg_sent
+    
+    raw_avg_sat = f_kpi[f_kpi['total_survey'] > 0]['satisfied_survey_%'].mean() if not f_kpi.empty else 0
+    avg_sat = (raw_avg_sat * 100) if raw_avg_sat <= 1 else raw_avg_sat
+    
     g1.plotly_chart(create_ghl_gauge("Avg Survey Sent", avg_sent, 85), use_container_width=True)
     g2.plotly_chart(create_ghl_gauge("Avg Satisfied Survey", avg_sat, 90), use_container_width=True)
     g3.plotly_chart(create_ghl_gauge("Avg Shift Score", avg_score, 85), use_container_width=True)
@@ -196,7 +208,8 @@ with tabs[1]:
     st.markdown("### DSAT Summary")
     pending = len(f_dsat[f_dsat['feedback'].isna() | (f_dsat['feedback'] == "")])
     s1, s2, s3, s4 = st.columns(4)
-    s1.metric("Total DSAT", len(f_dsat)); s2.metric("Feedback Pending", pending)
+    s1.metric("Total DSAT", len(f_dsat))
+    s2.metric("Feedback Pending", pending)
     s3.metric("Controllable", len(f_dsat[f_dsat['type'] == 'Controllable']))
     s4.metric("Uncontrollable", len(f_dsat[f_dsat['type'] == 'Uncontrollable']))
 
@@ -215,7 +228,9 @@ if access != "IC":
         st.markdown("### 🏆 Leaderboards")
         if not f_kpi.empty:
             ldb = f_kpi.groupby('advisor_name').agg({'sent_rate_%':'mean', 'satisfied_survey_%':'mean', 'qa_calls':'sum', 'ob_calls':'sum'}).reset_index()
-            ldb['sent_rate_%'] *= 100; ldb['satisfied_survey_%'] *= 100
+            # Normalize for leaderboard display
+            ldb['sent_rate_%'] = ldb['sent_rate_%'].apply(lambda x: x*100 if x <= 1 else x)
+            ldb['satisfied_survey_%'] = ldb['satisfied_survey_%'].apply(lambda x: x*100 if x <= 1 else x)
             st.dataframe(ldb.sort_values('satisfied_survey_%', ascending=False), hide_index=True, use_container_width=True)
 
 st.sidebar.divider()
