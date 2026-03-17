@@ -32,7 +32,7 @@ st.markdown("""
     .stTabs [aria-selected="true"] { background-color: #0052FF !important; color: white !important; }
     div.stInfo { background-color: rgba(0, 82, 255, 0.08); border-left: 5px solid #0052FF; color: var(--text-color); border-radius: 10px; }
     
-    /* LEFT CORNER LOGO VISIBILITY IN DARK MODE */
+    /* SIDEBAR LOGO INVERT FOR DARK MODE */
     [data-testid="stSidebarNav"]::before {
         content: "";
         display: block;
@@ -43,7 +43,7 @@ st.markdown("""
         height: 60px;
         margin-left: 20px;
         margin-top: 20px;
-        filter: invert(1) brightness(2); /* Ensures visibility in dark theme */
+        filter: invert(1) brightness(2);
     }
     </style>
 """, unsafe_allow_html=True)
@@ -151,9 +151,9 @@ elif freq == "Monthly":
 else:
     kpi_raw['Year_Label'] = kpi_raw['Date_Parsed'].dt.year
     sel = st.sidebar.selectbox("Select Year:", sorted(kpi_raw['Year_Label'].dropna().unique(), reverse=True))
-    f_kpi_t, f_dsat_t = kpi_raw[kpi_raw['Year_Label'] == sel], dsat_raw[kpi_raw['Year_Label'] == sel]
+    f_kpi_t, f_dsat_t = kpi_raw[kpi_raw['Year_Label'] == sel], dsat_raw[kpi_raw['Date_Parsed'].dt.year == sel]
 
-# Hierarchy Filter
+# Scoping
 if level == "Admin":
     sr_mgr = st.sidebar.selectbox("Sr. Manager Team", ["Entire Organization", "Jarvis Sokolowich", "Sumit Ludhwani"])
     if sr_mgr != "Entire Organization":
@@ -173,24 +173,24 @@ st.caption(f"Member: {user['Advisor Name']} | Access: {level} | Period: {sel}")
 tabs = st.tabs(["Overview", "DSAT Audit", "Leaderboards"])
 
 with tabs[0]:
-    avg_score = f_kpi[f_kpi['IA_Mins'] > 0]['Shift_Score'].mean() if not f_kpi.empty else 0
+    active_kpi = f_kpi[f_kpi['IA_Mins'] > 0]
+    avg_score = active_kpi['Shift_Score'].mean() if not active_kpi.empty else 0
     avg_sent = f_kpi[f_kpi['Total Survey'] > 0]['Sent Rate %'].mean() if not f_kpi.empty else 0
     avg_sat = f_kpi[f_kpi['Total Survey'] > 0]['Satisfied Survey %'].mean() if not f_kpi.empty else 0
     total_ob, total_qa = f_kpi['OB Calls'].sum() if not f_kpi.empty else 0, f_kpi['Q/A Calls'].sum() if not f_kpi.empty else 0
     
-    # HERO GAUGES (Shift Score, Sent Rate, Satisfied Survey)
+    # Hero Gauges
     c1, c2, c3 = st.columns(3)
     c1.plotly_chart(create_ghl_gauge("Avg Shift Score", avg_score, 85, color_steps=True), use_container_width=True)
     c2.plotly_chart(create_ghl_gauge("Avg Sent Rate %", avg_sent, 85, color_steps=True), use_container_width=True)
     c3.plotly_chart(create_ghl_gauge("Avg Satisfied %", avg_sat, 90, color_steps=True), use_container_width=True)
 
-    # EXACT VALUE GAUGES (OB & QA)
+    # Exact Value Gauges
     v1, v2 = st.columns(2)
     v1.plotly_chart(create_ghl_gauge("Total OB Calls", int(total_ob), is_percent=False), use_container_width=True)
     v2.plotly_chart(create_ghl_gauge("Total QA Calls", int(total_qa), is_percent=False), use_container_width=True)
 
     st.markdown("### 📈 Trend Analysis")
-    # 4 SPECIFIC TREND GRAPHS
     trend_data = f_kpi.groupby('Date_Parsed').agg({'Sent Rate %':'mean', 'Satisfied Survey %':'mean', 'Q/A Calls':'sum', 'OB Calls':'sum'}).reset_index()
     tc1, tc2 = st.columns(2)
     with tc1:
@@ -206,13 +206,21 @@ with tabs[1]:
     st.metric("Feedback Pending", pending, delta=f"{pending} Unactioned", delta_color="inverse")
     if not f_dsat.empty:
         col_w = [1.5, 2, 2, 1, 1.2, 3, 1]
-        for _, row in f_dsat.iterrows():
+        headers = ["Date", "Advisor", "Manager", "Link", "Type", "Feedback", "Action"]
+        h_cols = st.columns(col_w)
+        for i, h in enumerate(headers): h_cols[i].write(f"**{h}**")
+
+        # FIXED: Enumerate to provide a unique index for the key
+        for idx, row in f_dsat.reset_index().iterrows():
             fb = row['Feedback'] if pd.notna(row['Feedback']) and str(row['Feedback']).strip() != "" else "-"
             tp = row['Type'] if pd.notna(row['Type']) and str(row['Type']).strip() != "" else "-"
             r = st.columns(col_w)
             r[0].write(str(row['Timestamp'])[:10]); r[1].write(row['Advisor Name']); r[2].write(row.get('Manager Name', 'N/A'))
             r[3].markdown(f"[Chat]({row['DSAT chat link']})"); r[4].write(tp); r[5].write(fb)
-            if r[6].button("Update", key=f"btn_{row['RecordKey']}"): open_form_dialog(generate_form_url(row))
+            
+            # UNIQUE KEY FIX: Added idx to the button key string
+            if r[6].button("Update", key=f"btn_{idx}_{row['RecordKey']}"): 
+                open_form_dialog(generate_form_url(row))
 
 with tabs[2]:
     st.markdown("### 🏆 Team Leaderboards")
