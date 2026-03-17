@@ -9,7 +9,7 @@ KPI_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSU-KDmKs9i1EIEuIuJTu
 DSAT_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSU-KDmKs9i1EIEuIuJTuKKxG4nFZoPluRqOonP2BxRbQuVJunS8WQ9uJA6ayUCdoq043uFMH6u3UcM/pub?gid=367459010&single=true&output=csv"
 LOGO_URL = "https://s3.amazonaws.com/cdn.freshdesk.com/data/helpdesk/attachments/production/48175265495/original/PTXBCP40UHx-8LCKsM1zqLX-pq8nndFHSw.png?1641235482"
 
-# PRE-FILLED FORM CONFIG
+# PRE-FILLED FORM CONFIG (Replace placeholders with your Form IDs)
 FORM_ID = "YOUR_FORM_ID"
 ENTRY_KEY = "entry.1"
 ENTRY_FEEDBACK = "entry.2"
@@ -38,17 +38,32 @@ def generate_form_url(row):
     params = {ENTRY_KEY: row.get('RecordKey',''), ENTRY_FEEDBACK: row.get('Feedback',''), ENTRY_TYPE: row.get('Type','')}
     return f"{base}&{urllib.parse.urlencode(params)}"
 
-# --- 3. DATA LOADING ---
+# --- 3. DATA LOADING & MAPPING ENGINE ---
 @st.cache_data(ttl=60)
 def load_data(url, sheet_type=None):
     try:
         df = pd.read_csv(url)
         df.columns = df.columns.str.strip().str.replace('\ufeff', '').str.replace('"', '')
         
+        # MAPPINGS TO FIX KEYERRORS
         mappings = {
-            "KPI": {"Date_level - AS": "Date", "Agent Name": "Advisor Name", "IA": "IA_Hours", "Advisor Call Time ": "Advisor Call Time"},
-            "TEAM": {"Manager": "Manager Name", "Access level": "Access Level", "Advisor Email": "Email"},
-            "DSAT": {"Advisor Email": "Email", "Chat DSAT URL": "DSAT chat link", "Type": "Type"}
+            "KPI": {
+                "Date_level - AS": "Date", 
+                "Agent Name": "Advisor Name", 
+                "IA": "IA_Hours",
+                "Advisor Call Time ": "Advisor Call Time",
+                "Manager": "Manager Name"
+            },
+            "TEAM": {
+                "Manager": "Manager Name", 
+                "Access level": "Access Level",
+                "Advisor Email": "Email"
+            },
+            "DSAT": {
+                "Advisor Email": "Email", 
+                "Chat DSAT URL": "DSAT chat link",
+                "Manager": "Manager Name"
+            }
         }
         
         if sheet_type in mappings:
@@ -61,10 +76,11 @@ def load_data(url, sheet_type=None):
             df['Email'] = df['Email'].astype(str).str.strip().str.lower()
             
         if sheet_type == "KPI":
-            df['IA_Mins'] = df['IA_Hours'].apply(parse_time_to_minutes) if 'IA_Hours' in df.columns else df['IA'].apply(parse_time_to_minutes)
-            df['Call_Mins'] = df['Advisor Call Time'].apply(parse_time_to_minutes)
+            ia_col = 'IA_Hours' if 'IA_Hours' in df.columns else 'IA'
+            df['IA_Mins'] = df[ia_col].apply(parse_time_to_minutes)
+            df['Call_Mins'] = df['Advisor Call Time'].apply(parse_time_to_minutes) if 'Advisor Call Time' in df.columns else 0
             df['Shift_Score'] = (df['Call_Mins'] / df['IA_Mins'] * 100).fillna(0)
-            for col in ['Sent Rate %', 'Satisfied Survey %', 'Total Survey']:
+            for col in ['Sent Rate %', 'Satisfied Survey %', 'Total Survey', 'Q/A Calls', 'OB Calls']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', '').strip(), errors='coerce').fillna(0)
         return df
@@ -72,37 +88,29 @@ def load_data(url, sheet_type=None):
         st.error(f"Error processing {sheet_type}: {e}")
         return pd.DataFrame()
 
-# --- 4. AUTH & PREP ---
+# --- 4. AUTHENTICATION ---
 if 'auth' not in st.session_state: st.session_state.auth = None
-
 if not st.session_state.auth:
-    col1, col2 = st.columns([1, 5])
-    with col1: st.image(LOGO_URL, width=100)
-    with col2: st.title("HIGHLEVEL CS PERFORMANCE TRACKER")
+    col1, col2 = st.columns([1, 5]); col1.image(LOGO_URL, width=100); col2.title("HIGHLEVEL CS PERFORMANCE TRACKER")
     with st.form("login"):
-        e_in = st.text_input("Advisor Email").lower().strip()
-        p_in = st.text_input("Password", type="password")
+        e_in, p_in = st.text_input("Work Email").lower().strip(), st.text_input("Password", type="password")
         if st.form_submit_button("Login"):
             team_db = load_data(TEAM_URL, "TEAM")
-            if not team_db.empty:
-                user_match = team_db[(team_db['Email'] == e_in) & (team_db['Password'].astype(str).str.strip() == str(p_in).strip())]
-                if not user_match.empty:
-                    st.session_state.auth = user_match.iloc[0].to_dict()
-                    st.rerun()
-            st.error("Invalid credentials.")
+            user_match = team_db[(team_db['Email'] == e_in) & (team_db['Password'].astype(str).str.strip() == str(p_in).strip())]
+            if not user_match.empty:
+                st.session_state.auth = user_match.iloc[0].to_dict()
+                st.rerun()
+            else: st.error("Invalid credentials.")
     st.stop()
 
-# --- 5. DATA PERMISSIONS & DATES ---
-user = st.session_state.auth
+# --- 5. DATA PREP ---
+user, kpi_raw, dsat_raw, team_db = st.session_state.auth, load_data(KPI_URL, "KPI"), load_data(DSAT_URL, "DSAT"), load_data(TEAM_URL, "TEAM")
 level = user.get('Access Level', 'IC') 
-kpi_raw = load_data(KPI_URL, "KPI")
-dsat_raw = load_data(DSAT_URL, "DSAT")
-team_db = load_data(TEAM_URL, "TEAM")
 
+# Fix Date parsing using mapped column name
 kpi_raw['Date_Parsed'] = pd.to_datetime(kpi_raw['Date'], format="%b'%d'%y", errors='coerce')
 dsat_raw['Date_Parsed'] = pd.to_datetime(dsat_raw['Timestamp'], errors='coerce')
 
-# Duplicate Filter
 if 'Processed' in dsat_raw.columns:
     dsat_raw = dsat_raw[dsat_raw['Processed'] != 'DUPLICATE']
 
@@ -123,33 +131,34 @@ else:
     sel = st.sidebar.selectbox("Month:", kpi_raw.sort_values('Date_Parsed', ascending=False)['Month_Label'].dropna().unique())
     f_kpi_t, f_dsat_t = kpi_raw[kpi_raw['Month_Label'] == sel], dsat_raw[dsat_raw['Date_Parsed'].dt.strftime('%B %Y') == sel]
 
-# --- 7. SCOPE FILTERING ---
+# --- 7. PERMISSIONS ---
 if level == "Admin":
     scope = st.sidebar.radio("Scope", ["Global", "Manager", "Advisor"])
     if scope == "Global": f_kpi, f_dsat = f_kpi_t, f_dsat_t
     elif scope == "Manager":
-        m = st.sidebar.selectbox("Manager", team_db[team_db['Access Level'] == 'Manager']['Advisor Name'].unique())
-        ems = team_db[team_db['Manager Name'] == m]['Email'].unique()
-        f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'].isin(ems)], f_dsat_t[f_dsat_t['Email'].isin(ems)]
+        m_name = st.sidebar.selectbox("Manager", team_db[team_db['Access Level'] == 'Manager']['Advisor Name'].unique())
+        emails = team_db[team_db['Manager Name'] == m_name]['Email'].unique()
+        f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'].isin(emails)], f_dsat_t[f_dsat_t['Email'].isin(emails)]
     else:
-        a = st.sidebar.selectbox("Advisor", sorted(kpi_raw['Advisor Name'].dropna().unique()))
-        f_kpi, f_dsat = f_kpi_t[f_kpi_t['Advisor Name'] == a], f_dsat_t[f_dsat_t['Email'].isin(team_db[team_db['Advisor Name']==a]['Email'])]
+        a_name = st.sidebar.selectbox("Advisor", sorted(kpi_raw['Advisor Name'].dropna().unique()))
+        f_kpi, f_dsat = f_kpi_t[f_kpi_t['Advisor Name'] == a_name], f_dsat_t[f_dsat_t['Email'].isin(team_db[team_db['Advisor Name']==a_name]['Email'])]
 elif level == "Manager":
-    ems = team_db[team_db['Manager Name'] == user['Advisor Name']]['Email'].unique()
+    emails = team_db[team_db['Manager Name'] == user['Advisor Name']]['Email'].unique()
     sub = st.sidebar.radio("View", ["Team", "Drill-down"])
     if sub == "Drill-down":
-        a = st.sidebar.selectbox("Member", team_db[team_db['Email'].isin(ems)]['Advisor Name'])
-        f_kpi, f_dsat = f_kpi_t[f_kpi_t['Advisor Name'] == a], f_dsat_t[f_dsat_t['Email'].isin(team_db[team_db['Advisor Name']==a]['Email'])]
-    else: f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'].isin(ems)], f_dsat_t[f_dsat_t['Email'].isin(ems)]
+        a_name = st.sidebar.selectbox("Member", team_db[team_db['Email'].isin(emails)]['Advisor Name'])
+        f_kpi, f_dsat = f_kpi_t[f_kpi_t['Advisor Name'] == a_name], f_dsat_t[f_dsat_t['Email'].isin(team_db[team_db['Advisor Name']==a_name]['Email'])]
+    else: f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'].isin(emails)], f_dsat_t[f_dsat_t['Email'].isin(emails)]
 else: f_kpi, f_dsat = f_kpi_t[f_kpi_t['Email'] == user['Email']], f_dsat_t[f_dsat_t['Email'] == user['Email']]
 
 # --- 8. DASHBOARD UI ---
-st.header("HIGHLEVEL CS PERFORMANCE TRACKER")
+head1, head2 = st.columns([1, 6]); head1.image(LOGO_URL, width=80); head2.header("HIGHLEVEL CS PERFORMANCE TRACKER")
 st.caption(f"Welcome {user['Advisor Name']} | Access: {level} | Period: {sel}")
 
 tab1, tab2, *tab3 = st.tabs(["Performance Hub", "DSAT Analysis"] + (["Leaderboards"] if level in ["Manager", "Admin"] else []))
 
 with tab1:
+    # 2-decimal formatting for all metrics
     avg_score = f_kpi['Shift_Score'].mean() if not f_kpi.empty else 0
     avg_ia = f_kpi['IA_Mins'].mean() if not f_kpi.empty else 0
     avg_sent = f_kpi[f_kpi['Total Survey'] > 0]['Sent Rate %'].mean() if not f_kpi.empty else 0
@@ -165,13 +174,13 @@ with tab1:
     m[3].metric("Avg Satisfied Survey", f"{avg_sat:.2f}%")
     m[4].metric("Total Survey", int(f_kpi['Total Survey'].sum()) if not f_kpi.empty else 0)
 
-    # Trends
-    col_a, col_b = st.columns(2)
+    # 4-Trend Analysis
+    ca, cb = st.columns(2)
     chart_d = f_kpi.groupby('Date_Parsed').mean(numeric_only=True).reset_index() if not f_kpi.empty else pd.DataFrame()
-    with col_a:
+    with ca:
         st.plotly_chart(px.line(chart_d, x='Date_Parsed', y='Shift_Score', title="Shift Score Trend", markers=True), use_container_width=True)
         st.plotly_chart(px.line(chart_d, x='Date_Parsed', y='Satisfied Survey %', title="Satisfied Survey Trend", markers=True), use_container_width=True)
-    with col_b:
+    with cb:
         st.plotly_chart(px.line(chart_d, x='Date_Parsed', y='IA_Mins', title="IA Minutes Trend", markers=True), use_container_width=True)
         st.plotly_chart(px.line(chart_d, x='Date_Parsed', y='Sent Rate %', title="Survey Sent Trend", markers=True), use_container_width=True)
 
@@ -184,15 +193,13 @@ with tab2:
     
     if not f_dsat.empty:
         if level in ["Manager", "Admin"]: f_dsat['Update Action'] = f_dsat.apply(generate_form_url, axis=1)
-        # Display table
         df_v = f_dsat[['Timestamp', 'DSAT chat link', 'Feedback', 'Type'] + (['Update Action'] if level in ["Manager", "Admin"] else [])].copy()
         df_v.rename(columns={'Timestamp': 'Date'}, inplace=True)
         st.dataframe(df_v, column_config={
             "DSAT chat link": st.column_config.LinkColumn("View Chat"),
             "Update Action": st.column_config.LinkColumn("Update Feedback/Type")
         }, hide_index=True, use_container_width=True)
-    else:
-        st.write("No active DSAT records found for this selection. (Note: Rows marked 'DUPLICATE' are hidden).")
+    else: st.write("No DSAT records found.")
 
 if level in ["Manager", "Admin"] and tab3:
     with tab3[0]:
