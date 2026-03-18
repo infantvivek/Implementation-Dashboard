@@ -5,6 +5,7 @@ import plotly.express as px
 import urllib.parse
 import re
 import base64
+import time  # <--- ADD THIS NEW IMPORT
 from streamlit.components.v1 import iframe
 
 # --- 1. CONFIGURATION & URLS ---
@@ -125,10 +126,18 @@ def open_form_dialog(row):
         ENTRY_TYPE: tp if str(tp) != "nan" and tp != "-" else ""
     }
     url = f"https://docs.google.com/forms/d/e/{FORM_ID}/viewform?usp=pp_url&{urllib.parse.urlencode(params)}"
+    
     st.markdown("### Update Data Repository")
     st.caption("Submit updates below to push them directly to the Google Sheet backend.")
     iframe(url, height=550, scrolling=True)
-    if st.button("Close & Sync Dashboard", use_container_width=True): st.rerun()
+    
+    if st.button("Close & Sync Dashboard", use_container_width=True):
+        # 1. Give Google Apps Script 2 seconds to write the data to the sheet
+        time.sleep(2) 
+        # 2. Wipe Streamlit's memory so it is forced to fetch the newest data
+        st.cache_data.clear() 
+        # 3. Refresh the app
+        st.rerun()
 
 # --- 4. AUTHENTICATION (BULLETPROOF URL SESSIONS) ---
 if 'auth' not in st.session_state: st.session_state.auth = None
