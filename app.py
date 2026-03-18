@@ -80,7 +80,6 @@ def load_and_standardize(url, sheet_type):
         if 'email' in df.columns: df['email'] = df['email'].astype(str).str.strip().str.lower()
         
         if sheet_type == "KPI":
-            # FIX: We NO LONGER fillna(0). Blanks stay NaN so .mean() calculations ignore them perfectly.
             for col in ['sent_rate', 'sat_rate']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', ''), errors='coerce')
@@ -90,7 +89,6 @@ def load_and_standardize(url, sheet_type):
             df['ia_min'] = df['ia_raw'].apply(parse_duration) if 'ia_raw' in df.columns else 0
             df['call_min'] = df['call_raw'].apply(parse_duration) if 'call_raw' in df.columns else 0
             
-            # FIX: If IA is 0, shift score is NaN (blank), preventing 0s from skewing the true average.
             df['shift_score'] = np.where(df['ia_min'] > 0, (df['call_min']/df['ia_min']*100), np.nan)
         
         if sheet_type == "DSAT":
@@ -101,7 +99,6 @@ def load_and_standardize(url, sheet_type):
         return pd.DataFrame()
 
 def create_metric_card(title, value, target=None, is_percent=True):
-    # Dynamic Colors: Green, Yellow, Red
     if target:
         if value >= target: color = "#22C55E" # Green
         elif value >= target - 15: color = "#F59E0B" # Yellow
@@ -137,36 +134,41 @@ def open_form_dialog(row):
     iframe(url, height=550, scrolling=True)
     if st.button("Close & Sync Dashboard", use_container_width=True): st.rerun()
 
-# --- 4. AUTHENTICATION (WITH PERSISTENT COOKIES) ---
+# --- 4. AUTHENTICATION (WITH FAILSAFE COOKIES) ---
 if 'auth' not in st.session_state: st.session_state.auth = None
 team_db = load_and_standardize(TEAM_URL, "TEAM")
 
-# Check if user has a valid browser cookie
-stored_email = cookie_controller.get('ghl_user_email')
+# Safely check if user has a valid browser cookie
+stored_email = None
+try:
+    stored_email = cookie_controller.get('ghl_user_email')
+except Exception:
+    pass # Ignore TypeError on first load when cookies are uninitialized
 
 if stored_email and not st.session_state.auth:
     match = team_db[team_db['email'] == stored_email]
     if not match.empty:
         st.session_state.auth = match.iloc[0].to_dict()
 
-# Show Login screen if no cookie is found
+# Show Login screen if no cookie/auth is found
 if not st.session_state.auth:
     col_l, col_r = st.columns([1, 4])
     with col_l: st.image(LOGO_URL, width=150)
     with col_r: st.title("HighLevel Performance Hub")
     
-    # THE FORM BLOCK
     with st.form("login"):
         u_email = st.text_input("Work Email").lower().strip()
         u_pass = st.text_input("Password", type="password")
         
-        # PROPERLY INDENTED SUBMIT BUTTON (This fixes the missing submit button error)
         if st.form_submit_button("Sign In"):
             match = team_db[(team_db['email'] == u_email) & (team_db['pass'].astype(str) == str(u_pass))]
             if not match.empty:
                 st.session_state.auth = match.iloc[0].to_dict()
-                # Save email in cookie for 30 days
-                cookie_controller.set('ghl_user_email', u_email, max_age=2592000)
+                # Safely set the cookie
+                try:
+                    cookie_controller.set('ghl_user_email', u_email, max_age=2592000)
+                except Exception:
+                    pass
                 st.rerun()
             else: 
                 st.error("Invalid credentials.")
@@ -273,7 +275,7 @@ if access != "IC": tabs_list.append("🏆 Leaderboards")
 tabs = st.tabs(tabs_list)
 
 with tabs[0]:
-    # STRICT CALCULATIONS: Shift Score = (Total Call Minutes / Total IA Minutes) * 100
+    # STRICT CALCULATIONS
     tot_ia = f_kpi['ia_min'].sum() if not f_kpi.empty else 0
     tot_call = f_kpi['call_min'].sum() if not f_kpi.empty else 0
     avg_score = (tot_call / tot_ia * 100) if tot_ia > 0 else 0
@@ -284,7 +286,6 @@ with tabs[0]:
     st.markdown("### Performance Summary")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     
-    # STRICT CALCULATIONS: Survey Averages EXCLUDING Blanks (NaNs)
     sent_rates = f_kpi['sent_rate'].dropna() if 'sent_rate' in f_kpi.columns else pd.Series([])
     avg_sent = sent_rates.mean() if not sent_rates.empty else 0
     
@@ -455,9 +456,12 @@ if access != "IC":
                 st.markdown("#### 🚀 OB Expert")
                 st.dataframe(ldb.sort_values('ob', ascending=False)[['name', 'ob']].rename(columns={'name': 'Advisor Name', 'ob': 'Total OB Calls'}), hide_index=True, use_container_width=True)
 
-# --- 8. LOGOUT (CLEARS COOKIE) ---
+# --- 8. LOGOUT (SAFELY CLEARS COOKIE) ---
 st.sidebar.divider()
 if st.sidebar.button("Logout"): 
     st.session_state.auth = None
-    cookie_controller.remove('ghl_user_email')
+    try:
+        cookie_controller.remove('ghl_user_email')
+    except Exception:
+        pass
     st.rerun()
