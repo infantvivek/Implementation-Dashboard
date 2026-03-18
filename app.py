@@ -70,47 +70,37 @@ def load_and_standardize(url, sheet_type):
             "totalsurvey": "surveys", "timestamp": "ts_raw", "processed": "date_raw", "chatdsaturl": "link", "datelevelas": "date_raw"
         }
         df = df.rename(columns=rmap)
-        
-        # Ensure Critical Columns Exist to Prevent KeyErrors
-        if 'email' not in df.columns: df['email'] = ""
-        df['email'] = df['email'].astype(str).str.strip().str.lower()
+        if 'email' in df.columns: df['email'] = df['email'].astype(str).str.strip().str.lower()
         
         if sheet_type == "KPI":
-            # Extract numbers safely, leaving actual blanks as NaN
-            for col in ['sent_rate', 'sat_rate', 'ob', 'qa', 'surveys', 'name', 'mgr']:
-                if col not in df.columns: df[col] = np.nan
-                
+            # FIX: We NO LONGER fillna(0). Blanks stay NaN so .mean() calculations ignore them perfectly.
             for col in ['sent_rate', 'sat_rate']:
-                df[col] = df[col].replace(r'^\s*$', np.nan, regex=True) # Ensure space-only cells are NaN
-                df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', ''), errors='coerce')
-                # Fix Decimal to Percentage format securely
-                if df[col].max() <= 1.1: df[col] = df[col] * 100
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', ''), errors='coerce')
+                    if df[col].max() <= 1.1: df[col] = df[col] * 100
             
-            df['date_dt'] = pd.to_datetime(df['date_raw'], format="%b'%d'%y", errors='coerce') if 'date_raw' in df.columns else pd.NaT
+            df['date_dt'] = pd.to_datetime(df['date_raw'], format="%b'%d'%y", errors='coerce')
             df['ia_min'] = df['ia_raw'].apply(parse_duration) if 'ia_raw' in df.columns else 0
             df['call_min'] = df['call_raw'].apply(parse_duration) if 'call_raw' in df.columns else 0
+            
+            # FIX: If IA is 0, shift score is NaN (blank), preventing 0s from skewing the true average.
             df['shift_score'] = np.where(df['ia_min'] > 0, (df['call_min']/df['ia_min']*100), np.nan)
         
         if sheet_type == "DSAT":
-            if 'date_raw' in df.columns: df['date_dt'] = pd.to_datetime(df['date_raw'], errors='coerce')
-            elif 'ts_raw' in df.columns: df['date_dt'] = pd.to_datetime(df['ts_raw'], errors='coerce')
-            else: df['date_dt'] = pd.NaT
-            for col in ['type', 'feedback', 'link']:
-                if col not in df.columns: df[col] = "-"
+            df['date_dt'] = pd.to_datetime(df['date_raw'] if 'date_raw' in df.columns else df['ts_raw'], errors='coerce')
             
         return df
     except Exception as e:
-        # Graceful fallback structure
-        if sheet_type == "KPI": return pd.DataFrame(columns=['email', 'date_dt', 'shift_score', 'sent_rate', 'sat_rate', 'ob', 'qa', 'surveys', 'name', 'mgr'])
-        if sheet_type == "DSAT": return pd.DataFrame(columns=['email', 'date_dt', 'type', 'feedback', 'link'])
-        return pd.DataFrame(columns=['email', 'name', 'mgr', 'pass', 'level'])
+        return pd.DataFrame()
 
 def create_metric_card(title, value, target=None, is_percent=True):
+    # Dynamic Colors: Green, Yellow, Red
     if target:
         if value >= target: color = "#22C55E" # Green
         elif value >= target - 15: color = "#F59E0B" # Yellow
         else: color = "#EF4444" # Red
-    else: color = "#0052FF" # Default Blue
+    else:
+        color = "#0052FF" # Default HighLevel Blue
 
     val_str = f"{value:.2f}%" if is_percent else f"{int(value):,}"
     target_str = f"Target: {target}{'%' if is_percent else ''}" if target else "Activity Metric"
@@ -126,13 +116,15 @@ def create_metric_card(title, value, target=None, is_percent=True):
 
 @st.dialog("Update Feedback & Type", width="large")
 def open_form_dialog(row):
-    fb, tp = row.get('feedback', ''), row.get('type', '')
+    fb = row.get('feedback', '')
+    tp = row.get('type', '')
     params = {
         ENTRY_KEY: row.get('link', ''),
         ENTRY_FEEDBACK: fb if str(fb) != "nan" and fb != "-" else "",
         ENTRY_TYPE: tp if str(tp) != "nan" and tp != "-" else ""
     }
     url = f"https://docs.google.com/forms/d/e/{FORM_ID}/viewform?usp=pp_url&{urllib.parse.urlencode(params)}"
+    
     st.markdown("### Update Data Repository")
     st.caption("Submit updates below to push them directly to the Google Sheet backend.")
     iframe(url, height=550, scrolling=True)
@@ -245,11 +237,12 @@ f_dsat = d_f[d_f['email'].isin(scoped_emails)]
 st.title("Implementation Team Performance Hub")
 st.success(f"Welcome **{user.get('name', 'User')}**!! | Access Level : **{access}**")
 
-tabs = st.tabs(["📊 Performance Overview", "🚫 DSAT Analysis & Feedback"] + (["🏆 Leaderboards"] if access != "IC" else []))
+tabs_list = ["📊 Performance Overview", "🚫 DSAT Analysis & Feedback", "📄 Detailed Report"]
+if access != "IC": tabs_list.append("🏆 Leaderboards")
+tabs = st.tabs(tabs_list)
 
 with tabs[0]:
-    # STRICT CALCULATIONS
-    # Shift Score: (Total Call Minutes / Total IA Minutes) * 100
+    # STRICT CALCULATIONS: Shift Score = (Total Call Minutes / Total IA Minutes) * 100
     tot_ia = f_kpi['ia_min'].sum() if not f_kpi.empty else 0
     tot_call = f_kpi['call_min'].sum() if not f_kpi.empty else 0
     avg_score = (tot_call / tot_ia * 100) if tot_ia > 0 else 0
@@ -260,9 +253,12 @@ with tabs[0]:
     st.markdown("### Performance Summary")
     c1, c2, c3, c4, c5 = st.columns(5)
     
-    # Survey Averages: Purely average the non-blank cells across the scoped dataframe
-    avg_sent = f_kpi['sent_rate'].dropna().mean() if not f_kpi['sent_rate'].dropna().empty else 0
-    avg_sat = f_kpi['sat_rate'].dropna().mean() if not f_kpi['sat_rate'].dropna().empty else 0
+    # STRICT CALCULATIONS: Survey Averages EXCLUDING Blanks (NaNs)
+    sent_rates = f_kpi['sent_rate'].dropna() if 'sent_rate' in f_kpi.columns else pd.Series([])
+    avg_sent = sent_rates.mean() if not sent_rates.empty else 0
+    
+    sat_rates = f_kpi['sat_rate'].dropna() if 'sat_rate' in f_kpi.columns else pd.Series([])
+    avg_sat = sat_rates.mean() if not sat_rates.empty else 0
     
     tot_ob = int(f_kpi['ob'].fillna(0).sum()) if not f_kpi.empty else 0
     tot_qa = int(f_kpi['qa'].fillna(0).sum()) if not f_kpi.empty else 0
@@ -324,7 +320,8 @@ with tabs[1]:
         for idx, row in f_table.reset_index().iterrows():
             r = st.columns(col_w)
             date_str = str(row['date_dt'])[:10] if pd.notna(row['date_dt']) else "-"
-            fb, tp = row.get('feedback', '-'), row.get('type', '-')
+            fb = row.get('feedback', '-')
+            tp = row.get('type', '-')
             
             c_idx = 0
             r[c_idx].write(date_str); c_idx += 1
@@ -334,13 +331,56 @@ with tabs[1]:
             r[c_idx].write(tp if str(tp) != 'nan' and tp != "" else "-"); c_idx += 1
             r[c_idx].write(fb if str(fb) != 'nan' and fb != "" else "-"); c_idx += 1
             
-            if access != "IC" and r[c_idx].button("📝 Update", key=f"upd_{idx}"):
-                open_form_dialog(row)
+            if access != "IC":
+                if r[c_idx].button("📝 Update", key=f"upd_{idx}"):
+                    open_form_dialog(row)
+
+with tabs[2]:
+    st.markdown("### 📄 Detailed KPI Report")
+    st.caption(f"Comprehensive view of daily metrics for the selected time range. Data is scoped by your role and filter selections.")
+    
+    if not f_kpi.empty:
+        rep_df = pd.DataFrame()
+        rep_df['Date'] = f_kpi['date_dt'].dt.strftime('%Y-%m-%d')
+        rep_df['Advisor Name'] = f_kpi['name']
+        
+        if access != "IC":
+            rep_df['Manager'] = f_kpi['mgr']
+            
+        if 'shift' in f_kpi.columns: rep_df['Shift'] = f_kpi['shift']
+        rep_df['IA'] = f_kpi['ia_raw']
+        rep_df['Call Time'] = f_kpi['call_raw']
+        rep_df['Shift Score %'] = f_kpi['shift_score'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "-")
+        
+        rep_df['OB Calls'] = f_kpi['ob'].fillna(0).astype(int)
+        rep_df['QA Calls'] = f_kpi['qa'].fillna(0).astype(int)
+        if 'mob' in f_kpi.columns: rep_df['MOB'] = f_kpi['mob'].fillna(0).astype(int)
+        
+        rep_df['Total Survey'] = f_kpi['surveys'].fillna(0).astype(int)
+        rep_df['Survey Sent %'] = f_kpi['sent_rate'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "-")
+        rep_df['Satisfied Survey %'] = f_kpi['sat_rate'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "-")
+        
+        if 'avgobcalltime' in f_kpi.columns: rep_df['Avg OB Call Time'] = f_kpi['avgobcalltime'].fillna("-")
+        if 'avgqacalltime' in f_kpi.columns: rep_df['Avg QA Call Time'] = f_kpi['avgqacalltime'].fillna("-")
+        if 'timeoff' in f_kpi.columns: rep_df['Time Off'] = f_kpi['timeoff'].fillna("-")
+        if 'callabandons' in f_kpi.columns: rep_df['Call Abandons'] = f_kpi['callabandons'].fillna(0).astype(int)
+        if 'ticketscreated' in f_kpi.columns: rep_df['Tickets Created'] = f_kpi['ticketscreated'].fillna(0).astype(int)
+        
+        st.dataframe(rep_df, hide_index=True, use_container_width=True)
+        
+        csv_data = rep_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Download Detailed Report CSV",
+            data=csv_data,
+            file_name="detailed_performance_report.csv",
+            mime="text/csv",
+        )
+    else:
+        st.info("No data available for the selected filters.")
 
 if access != "IC":
-    with tabs[2]:
+    with tabs[3]:
         if not f_kpi.empty:
-            # Custom Aggregation to strictly exclude blanks (NaNs) in the leaderboard averages
             ldb = f_kpi.groupby('name').agg(
                 sent_rate=('sent_rate', lambda x: x.dropna().mean()),
                 sat_rate=('sat_rate', lambda x: x.dropna().mean()),
