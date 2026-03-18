@@ -136,10 +136,19 @@ def open_form_dialog(row):
     iframe(url, height=550, scrolling=True)
     if st.button("Close & Sync Dashboard", use_container_width=True): st.rerun()
 
-# --- 4. AUTHENTICATION ---
+# --- 4. AUTHENTICATION (PERSISTENT LOGINS) ---
 if 'auth' not in st.session_state: st.session_state.auth = None
 team_db = load_and_standardize(TEAM_URL, "TEAM")
 
+# 1. Check if the user has a valid browser cookie
+stored_email = cookie_controller.get('ghl_user_email')
+
+if stored_email and not st.session_state.auth:
+    match = team_db[team_db['email'] == stored_email]
+    if not match.empty:
+        st.session_state.auth = match.iloc[0].to_dict()
+
+# 2. Render Login Screen if no auth session exists
 if not st.session_state.auth:
     col_l, col_r = st.columns([1, 4])
     with col_l: st.image(LOGO_URL, width=150)
@@ -150,8 +159,14 @@ if not st.session_state.auth:
         if st.form_submit_button("Sign In"):
             match = team_db[(team_db['email'] == u_email) & (team_db['pass'].astype(str) == str(u_pass))]
             if not match.empty:
-                st.session_state.auth = match.iloc[0].to_dict(); st.rerun()
-            else: st.error("Invalid credentials.")
+                st.session_state.auth = match.iloc[0].to_dict()
+                
+                # Save the email in a browser cookie for 30 days (2592000 seconds)
+                cookie_controller.set('ghl_user_email', u_email, max_age=2592000)
+                
+                st.rerun()
+            else: 
+                st.error("Invalid credentials.")
     st.stop()
 
 # --- 5. FREQUENCY & DATA FILTERING ---
@@ -438,4 +453,7 @@ if access != "IC":
                 st.dataframe(ldb.sort_values('ob', ascending=False)[['name', 'ob']].rename(columns={'name': 'Advisor Name', 'ob': 'Total OB Calls'}), hide_index=True, use_container_width=True)
 
 st.sidebar.divider()
-if st.sidebar.button("Logout"): st.session_state.auth = None; st.rerun()
+if st.sidebar.button("Logout"): 
+    st.session_state.auth = None
+    cookie_controller.remove('ghl_user_email') # Delete the cookie
+    st.rerun()
