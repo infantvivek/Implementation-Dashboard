@@ -5,6 +5,7 @@ import plotly.express as px
 import urllib.parse
 import re
 from streamlit.components.v1 import iframe
+from streamlit_cookies_controller import CookieController # NEW IMPORT
 
 # --- 1. CONFIGURATION & URLS ---
 TEAM_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSU-KDmKs9i1EIEuIuJTuKKxG4nFZoPluRqOonP2BxRbQuVJunS8WQ9uJA6ayUCdoq043uFMH6u3UcM/pub?gid=0&single=true&output=csv"
@@ -19,6 +20,8 @@ ENTRY_TYPE = "entry.2"      # Field capturing 'Type' (Controllable/Uncontrollabl
 ENTRY_FEEDBACK = "entry.3"  # Field capturing 'Feedback'
 
 st.set_page_config(layout="wide", page_title="HighLevel Performance Hub", page_icon="🚀")
+# INITIALIZE COOKIE CONTROLLER
+cookie_controller = CookieController()
 
 # --- 2. SaaS/GHL THEME ENGINE ---
 st.markdown("""
