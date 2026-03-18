@@ -4,8 +4,8 @@ import numpy as np
 import plotly.express as px
 import urllib.parse
 import re
+import base64
 from streamlit.components.v1 import iframe
-from streamlit_cookies_controller import CookieController
 
 # --- 1. CONFIGURATION & URLS ---
 TEAM_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSU-KDmKs9i1EIEuIuJTuKKxG4nFZoPluRqOonP2BxRbQuVJunS8WQ9uJA6ayUCdoq043uFMH6u3UcM/pub?gid=0&single=true&output=csv"
@@ -15,14 +15,11 @@ LOGO_URL = "https://s3.amazonaws.com/cdn.freshdesk.com/data/helpdesk/attachments
 
 # --- GOOGLE FORM CONFIGURATION ---
 FORM_ID = "YOUR_GOOGLE_FORM_ID_HERE" # Replace with your actual Form ID
-ENTRY_KEY = "entry.1"       # Field capturing the Chat Link (Unique ID)
-ENTRY_TYPE = "entry.2"      # Field capturing 'Type' (Controllable/Uncontrollable)
-ENTRY_FEEDBACK = "entry.3"  # Field capturing 'Feedback'
+ENTRY_KEY = "entry.1"       
+ENTRY_TYPE = "entry.2"      
+ENTRY_FEEDBACK = "entry.3"  
 
 st.set_page_config(layout="wide", page_title="HighLevel Performance Hub", page_icon="🚀")
-
-# INITIALIZE COOKIE CONTROLLER FOR PERSISTENT LOGINS
-cookie_controller = CookieController()
 
 # --- 2. SaaS/GHL THEME ENGINE ---
 st.markdown("""
@@ -88,7 +85,6 @@ def load_and_standardize(url, sheet_type):
             df['date_dt'] = pd.to_datetime(df['date_raw'], format="%b'%d'%y", errors='coerce')
             df['ia_min'] = df['ia_raw'].apply(parse_duration) if 'ia_raw' in df.columns else 0
             df['call_min'] = df['call_raw'].apply(parse_duration) if 'call_raw' in df.columns else 0
-            
             df['shift_score'] = np.where(df['ia_min'] > 0, (df['call_min']/df['ia_min']*100), np.nan)
         
         if sheet_type == "DSAT":
@@ -104,7 +100,7 @@ def create_metric_card(title, value, target=None, is_percent=True):
         elif value >= target - 15: color = "#F59E0B" # Yellow
         else: color = "#EF4444" # Red
     else:
-        color = "#0052FF" # Default HighLevel Blue
+        color = "#0052FF" # Default Blue
 
     val_str = f"{value:.2f}%" if is_percent else f"{int(value):,}"
     target_str = f"Target: {target}{'%' if is_percent else ''}" if target else "Activity Metric"
@@ -128,29 +124,26 @@ def open_form_dialog(row):
         ENTRY_TYPE: tp if str(tp) != "nan" and tp != "-" else ""
     }
     url = f"https://docs.google.com/forms/d/e/{FORM_ID}/viewform?usp=pp_url&{urllib.parse.urlencode(params)}"
-    
     st.markdown("### Update Data Repository")
     st.caption("Submit updates below to push them directly to the Google Sheet backend.")
     iframe(url, height=550, scrolling=True)
     if st.button("Close & Sync Dashboard", use_container_width=True): st.rerun()
 
-# --- 4. AUTHENTICATION (WITH FAILSAFE COOKIES) ---
+# --- 4. AUTHENTICATION (BULLETPROOF URL SESSIONS) ---
 if 'auth' not in st.session_state: st.session_state.auth = None
 team_db = load_and_standardize(TEAM_URL, "TEAM")
 
-# Safely check if user has a valid browser cookie
-stored_email = None
-try:
-    stored_email = cookie_controller.get('ghl_user_email')
-except Exception:
-    pass # Ignore TypeError on first load when cookies are uninitialized
+# 1. Check URL for existing session (Bypasses all browser cookie blockers)
+if not st.session_state.auth and 'session' in st.query_params:
+    try:
+        decoded_email = base64.b64decode(st.query_params['session']).decode('utf-8')
+        match = team_db[team_db['email'] == decoded_email]
+        if not match.empty:
+            st.session_state.auth = match.iloc[0].to_dict()
+    except Exception:
+        pass
 
-if stored_email and not st.session_state.auth:
-    match = team_db[team_db['email'] == stored_email]
-    if not match.empty:
-        st.session_state.auth = match.iloc[0].to_dict()
-
-# Show Login screen if no cookie/auth is found
+# 2. Show Login screen if no active session is found
 if not st.session_state.auth:
     col_l, col_r = st.columns([1, 4])
     with col_l: st.image(LOGO_URL, width=150)
@@ -164,11 +157,11 @@ if not st.session_state.auth:
             match = team_db[(team_db['email'] == u_email) & (team_db['pass'].astype(str) == str(u_pass))]
             if not match.empty:
                 st.session_state.auth = match.iloc[0].to_dict()
-                # Safely set the cookie
-                try:
-                    cookie_controller.set('ghl_user_email', u_email, max_age=2592000)
-                except Exception:
-                    pass
+                
+                # Create a secure URL Token
+                token = base64.b64encode(u_email.encode('utf-8')).decode('utf-8')
+                st.query_params['session'] = token
+                
                 st.rerun()
             else: 
                 st.error("Invalid credentials.")
@@ -260,13 +253,9 @@ f_kpi = k_f[k_f['email'].isin(scoped_emails)]
 f_dsat = d_f[d_f['email'].isin(scoped_emails)]
 
 # --- 7. MAIN UI ---
-
-# Branded Header
 header_col1, header_col2 = st.columns([1, 10])
-with header_col1:
-    st.image(LOGO_URL, width=80)
-with header_col2:
-    st.title("Implementation Team Performance Hub")
+with header_col1: st.image(LOGO_URL, width=80)
+with header_col2: st.title("Implementation Team Performance Hub")
 
 st.success(f"Welcome **{user.get('name', 'User')}**!! | Access Level : **{access}**")
 
@@ -275,7 +264,6 @@ if access != "IC": tabs_list.append("🏆 Leaderboards")
 tabs = st.tabs(tabs_list)
 
 with tabs[0]:
-    # STRICT CALCULATIONS
     tot_ia = f_kpi['ia_min'].sum() if not f_kpi.empty else 0
     tot_call = f_kpi['call_min'].sum() if not f_kpi.empty else 0
     avg_score = (tot_call / tot_ia * 100) if tot_ia > 0 else 0
@@ -456,12 +444,10 @@ if access != "IC":
                 st.markdown("#### 🚀 OB Expert")
                 st.dataframe(ldb.sort_values('ob', ascending=False)[['name', 'ob']].rename(columns={'name': 'Advisor Name', 'ob': 'Total OB Calls'}), hide_index=True, use_container_width=True)
 
-# --- 8. LOGOUT (SAFELY CLEARS COOKIE) ---
+# --- 8. LOGOUT (WIPES URL SESSION) ---
 st.sidebar.divider()
 if st.sidebar.button("Logout"): 
     st.session_state.auth = None
-    try:
-        cookie_controller.remove('ghl_user_email')
-    except Exception:
-        pass
+    st.query_params.clear()
     st.rerun()
+    
