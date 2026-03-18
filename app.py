@@ -5,7 +5,7 @@ import plotly.express as px
 import urllib.parse
 import re
 from streamlit.components.v1 import iframe
-from streamlit_cookies_controller import CookieController # NEW IMPORT
+from streamlit_cookies_controller import CookieController
 
 # --- 1. CONFIGURATION & URLS ---
 TEAM_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSU-KDmKs9i1EIEuIuJTuKKxG4nFZoPluRqOonP2BxRbQuVJunS8WQ9uJA6ayUCdoq043uFMH6u3UcM/pub?gid=0&single=true&output=csv"
@@ -20,7 +20,8 @@ ENTRY_TYPE = "entry.2"      # Field capturing 'Type' (Controllable/Uncontrollabl
 ENTRY_FEEDBACK = "entry.3"  # Field capturing 'Feedback'
 
 st.set_page_config(layout="wide", page_title="HighLevel Performance Hub", page_icon="🚀")
-# INITIALIZE COOKIE CONTROLLER
+
+# INITIALIZE COOKIE CONTROLLER FOR PERSISTENT LOGINS
 cookie_controller = CookieController()
 
 # --- 2. SaaS/GHL THEME ENGINE ---
@@ -136,11 +137,11 @@ def open_form_dialog(row):
     iframe(url, height=550, scrolling=True)
     if st.button("Close & Sync Dashboard", use_container_width=True): st.rerun()
 
-# --- 4. AUTHENTICATION (PERSISTENT LOGINS) ---
+# --- 4. AUTHENTICATION (WITH PERSISTENT COOKIES) ---
 if 'auth' not in st.session_state: st.session_state.auth = None
 team_db = load_and_standardize(TEAM_URL, "TEAM")
 
-# 1. Check if the user has a valid browser cookie
+# Check if user has a valid browser cookie
 stored_email = cookie_controller.get('ghl_user_email')
 
 if stored_email and not st.session_state.auth:
@@ -148,22 +149,24 @@ if stored_email and not st.session_state.auth:
     if not match.empty:
         st.session_state.auth = match.iloc[0].to_dict()
 
-# 2. Render Login Screen if no auth session exists
+# Show Login screen if no cookie is found
 if not st.session_state.auth:
     col_l, col_r = st.columns([1, 4])
     with col_l: st.image(LOGO_URL, width=150)
     with col_r: st.title("HighLevel Performance Hub")
+    
+    # THE FORM BLOCK
     with st.form("login"):
         u_email = st.text_input("Work Email").lower().strip()
         u_pass = st.text_input("Password", type="password")
+        
+        # PROPERLY INDENTED SUBMIT BUTTON (This fixes the missing submit button error)
         if st.form_submit_button("Sign In"):
             match = team_db[(team_db['email'] == u_email) & (team_db['pass'].astype(str) == str(u_pass))]
             if not match.empty:
                 st.session_state.auth = match.iloc[0].to_dict()
-                
-                # Save the email in a browser cookie for 30 days (2592000 seconds)
+                # Save email in cookie for 30 days
                 cookie_controller.set('ghl_user_email', u_email, max_age=2592000)
-                
                 st.rerun()
             else: 
                 st.error("Invalid credentials.")
@@ -452,8 +455,9 @@ if access != "IC":
                 st.markdown("#### 🚀 OB Expert")
                 st.dataframe(ldb.sort_values('ob', ascending=False)[['name', 'ob']].rename(columns={'name': 'Advisor Name', 'ob': 'Total OB Calls'}), hide_index=True, use_container_width=True)
 
+# --- 8. LOGOUT (CLEARS COOKIE) ---
 st.sidebar.divider()
 if st.sidebar.button("Logout"): 
     st.session_state.auth = None
-    cookie_controller.remove('ghl_user_email') # Delete the cookie
+    cookie_controller.remove('ghl_user_email')
     st.rerun()
