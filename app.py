@@ -15,7 +15,7 @@ DSAT_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSU-KDmKs9i1EIEuIuJT
 LOGO_URL = "https://s3.amazonaws.com/cdn.freshdesk.com/data/helpdesk/attachments/production/48175265495/original/PTXBCP40UHx-8LCKsM1zqLX-pq8nndFHSw.png?1641235482"
 
 # --- GOOGLE FORM CONFIGURATION ---
-FORM_ID = "1FAIpQLSdu2gEmHPZBCoUZ1naQlGTeJtgTgB47YfCENCfeKAHU1OA76g" # Make sure to use the published 1FAIp... ID
+FORM_ID = "1FAIpQLSdu2gEmHPZBCoUZ1naQlGTeJtgTgB47YfCENCfeKAHU1OA76g"
 ENTRY_KEY = "entry.1726897360"       
 ENTRY_TYPE = "entry.1303252108"      
 ENTRY_FEEDBACK = "entry.1754509958"  
@@ -60,7 +60,11 @@ def parse_duration(time_str):
 @st.cache_data(ttl=60)
 def load_and_standardize(url, sheet_type):
     try:
-        df = pd.read_csv(url)
+        # MAGIC FIX: CACHE BUSTING 
+        # Appends a unique timestamp so Google NEVER gives us a stale cached CSV
+        fresh_url = f"{url}&_t={int(time.time())}" if "?" in url else f"{url}?_t={int(time.time())}"
+        
+        df = pd.read_csv(fresh_url)
         df.columns = [re.sub(r'[^a-zA-Z0-9]', '', str(c)).lower() for c in df.columns]
         
         rmap = {
@@ -82,7 +86,6 @@ def load_and_standardize(url, sheet_type):
             df['date_dt'] = pd.to_datetime(df['date_raw'], format="%b'%d'%y", errors='coerce')
             df['ia_min'] = df['ia_raw'].apply(parse_duration) if 'ia_raw' in df.columns else 0
             df['call_min'] = df['call_raw'].apply(parse_duration) if 'call_raw' in df.columns else 0
-            
             df['shift_score'] = np.where(df['ia_min'] > 0, (df['call_min']/df['ia_min']*100), np.nan)
         
         if sheet_type == "DSAT":
@@ -98,7 +101,7 @@ def create_metric_card(title, value, target=None, is_percent=True):
         elif value >= target - 15: color = "#F59E0B" # Yellow
         else: color = "#EF4444" # Red
     else:
-        color = "#0052FF" # Default HighLevel Blue
+        color = "#0052FF" # Default Blue
 
     val_str = f"{value:.2f}%" if is_percent else f"{int(value):,}"
     target_str = f"Target: {target}{'%' if is_percent else ''}" if target else "Activity Metric"
@@ -127,10 +130,10 @@ def open_form_dialog(row):
     st.caption("Submit updates below to push them directly to the Google Sheet backend.")
     iframe(url, height=550, scrolling=True)
     
-    # RELOAD FIX: Forces cache wipe and waits 2 seconds for Google to sync
     if st.button("Close & Sync Dashboard", use_container_width=True): 
         with st.spinner("Syncing data from Google Sheets..."):
-            time.sleep(2)
+            # Increased sleep to ensure Apps Script completely finishes writing
+            time.sleep(3.5)
             st.cache_data.clear()
         st.rerun()
 
@@ -138,7 +141,6 @@ def open_form_dialog(row):
 if 'auth' not in st.session_state: st.session_state.auth = None
 team_db = load_and_standardize(TEAM_URL, "TEAM")
 
-# 1. Check URL for existing session
 if not st.session_state.auth and 'session' in st.query_params:
     try:
         decoded_email = base64.b64decode(st.query_params['session']).decode('utf-8')
@@ -149,21 +151,16 @@ if not st.session_state.auth and 'session' in st.query_params:
     except Exception:
         pass
 
-# 2. INACTIVITY TIMEOUT LOGIC
 if st.session_state.auth:
     current_time = time.time()
     if 'last_active' in st.session_state:
-        # 15 minutes = 900 seconds
         if current_time - st.session_state.last_active > 900:
             st.session_state.auth = None
             st.query_params.clear()
             st.warning("⚠️ Your session has expired due to inactivity. Please log in again.")
-            st.stop() # Halts script and shows login screen below
-            
-    # Reset the timer on any user interaction (refresh, click, filter)
+            st.stop()
     st.session_state.last_active = current_time
 
-# 3. Show Login screen if no active session is found
 if not st.session_state.auth:
     col_l, col_r = st.columns([1, 4])
     with col_l: st.image(LOGO_URL, width=150)
@@ -179,7 +176,6 @@ if not st.session_state.auth:
                 st.session_state.auth = match.iloc[0].to_dict()
                 st.session_state.last_active = time.time()
                 
-                # Create a secure URL Token
                 token = base64.b64encode(u_email.encode('utf-8')).decode('utf-8')
                 st.query_params['session'] = token
                 st.rerun()
@@ -279,13 +275,11 @@ with header_col2: st.title("Implementation Team Performance Hub")
 
 st.success(f"Welcome **{user.get('name', 'User')}**!! | Access Level : **{access}**")
 
-# DYNAMIC TAB ORDERING
 tabs_list = ["📊 Performance Overview", "🚫 DSAT Analysis & Feedback"]
 if access != "IC":
-    tabs_list.append("🏆 Leaderboards") # Leaderboard is 3rd for Admins/Managers
-tabs_list.append("📄 Detailed Report") # Detailed Report is Last
+    tabs_list.append("🏆 Leaderboards")
+tabs_list.append("📄 Detailed Report")
 
-# Generate the tabs based on the list
 ui_tabs = st.tabs(tabs_list)
 tab_perf = ui_tabs[0]
 tab_dsat = ui_tabs[1]
