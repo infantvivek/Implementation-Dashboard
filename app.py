@@ -28,12 +28,17 @@ st.markdown("""
     
     :root { --ghl-blue: #0052FF; }
 
+    /* Standard App Metrics */
     .stMetric { background-color: var(--secondary-background-color); padding: 20px; border-radius: 12px; border: 1px solid rgba(0, 82, 255, 0.1); box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05); }
+    
+    /* GHL Sidebar Branding - Adaptive to Light/Dark Mode */
     [data-testid="stSidebarNav"]::before {
         content: ""; display: block; background-image: url('""" + LOGO_URL + """');
         background-size: contain; background-repeat: no-repeat;
         width: 170px; height: 50px; margin: 25px 0 10px 25px; filter: brightness(0) invert(1); 
     }
+    
+    /* Tabs Styling */
     .stTabs [aria-selected="true"] { background-color: var(--ghl-blue) !important; color: white !important; border-radius: 8px; }
     div.stInfo { background-color: rgba(0, 82, 255, 0.05); border-left: 5px solid #0052FF; color: var(--text-color); border-radius: 10px; padding: 15px; }
     </style>
@@ -68,15 +73,27 @@ def load_and_standardize(url, sheet_type):
         if 'email' in df.columns: df['email'] = df['email'].astype(str).str.strip().str.lower()
         
         if sheet_type == "KPI":
-            # Coerce empty strings and non-numbers to NaN (blanks)
-            for col in ['sent_rate', 'sat_rate']:
+            # 1. Coerce empty strings and non-numbers to NaN
+            for col in ['sent_rate', 'sat_rate', 'surveys']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', ''), errors='coerce')
-                    if df[col].max() <= 1.1: df[col] = df[col] * 100
             
-            df['date_dt'] = pd.to_datetime(df['date_raw'], format="%b'%d'%y", errors='coerce')
+            # 2. Fix Decimal to Percentage format
+            for col in ['sent_rate', 'sat_rate']:
+                if col in df.columns and df[col].max() <= 1.1: 
+                    df[col] = df[col] * 100
+            
+            # 3. CRITICAL FIX: Omit rates completely if total surveys are 0 or blank
+            if 'surveys' in df.columns:
+                mask = (df['surveys'] == 0) | (df['surveys'].isna())
+                if 'sat_rate' in df.columns: df.loc[mask, 'sat_rate'] = np.nan
+                if 'sent_rate' in df.columns: df.loc[mask, 'sent_rate'] = np.nan
+            
+            # 4. Dates & Durations
+            df['date_dt'] = pd.to_datetime(df['date_raw'], format="%b'%d'%y", errors='coerce') if 'date_raw' in df.columns else pd.NaT
             df['ia_min'] = df['ia_raw'].apply(parse_duration) if 'ia_raw' in df.columns else 0
             df['call_min'] = df['call_raw'].apply(parse_duration) if 'call_raw' in df.columns else 0
+            df['shift_score'] = np.where(df['ia_min'] > 0, (df['call_min']/df['ia_min']*100), np.nan)
             
         if sheet_type == "DSAT":
             df['date_dt'] = pd.to_datetime(df['date_raw'] if 'date_raw' in df.columns else df['ts_raw'], errors='coerce')
@@ -149,24 +166,32 @@ freq = st.sidebar.radio("Frequency", ["Daily", "Weekly", "Monthly", "Yearly"], h
 if not kpi_raw.empty:
     if freq == "Daily":
         available = sorted(kpi_raw['date_dt'].dropna().unique(), reverse=True)
-        sel = st.sidebar.selectbox("Select Date", available, format_func=lambda x: x.strftime('%d-%m-%Y'))
-        k_f = kpi_raw[kpi_raw['date_dt'] == sel]
-        d_f = dsat_raw[dsat_raw['date_dt'].dt.date == sel.date()] if not dsat_raw.empty else dsat_raw
+        if available:
+            sel = st.sidebar.selectbox("Select Date", available, format_func=lambda x: x.strftime('%d-%m-%Y'))
+            k_f = kpi_raw[kpi_raw['date_dt'] == sel]
+            d_f = dsat_raw[dsat_raw['date_dt'].dt.date == sel.date()] if not dsat_raw.empty else dsat_raw.copy()
+        else: k_f, d_f = kpi_raw.copy(), dsat_raw.copy()
+        
     elif freq == "Weekly":
         kpi_raw['wk'] = kpi_raw['date_dt'].dt.to_period('W').apply(lambda r: r.start_time)
         available = sorted(kpi_raw['wk'].dropna().unique(), reverse=True)
-        sel = st.sidebar.selectbox("Select Week", available, format_func=lambda x: x.strftime('%d-%m-%Y'))
-        k_f = kpi_raw[kpi_raw['wk'] == sel]
-        d_f = dsat_raw[(dsat_raw['date_dt'] >= sel) & (dsat_raw['date_dt'] < sel + pd.Timedelta(days=7))] if not dsat_raw.empty else dsat_raw
+        if available:
+            sel = st.sidebar.selectbox("Select Week", available, format_func=lambda x: x.strftime('%d-%m-%Y'))
+            k_f = kpi_raw[kpi_raw['wk'] == sel]
+            d_f = dsat_raw[(dsat_raw['date_dt'] >= sel) & (dsat_raw['date_dt'] < sel + pd.Timedelta(days=7))] if not dsat_raw.empty else dsat_raw.copy()
+        else: k_f, d_f = kpi_raw.copy(), dsat_raw.copy()
+        
     else:
         kpi_raw['mo'] = kpi_raw['date_dt'].dt.strftime('%B %Y') if freq == "Monthly" else kpi_raw['date_dt'].dt.year
-        available = kpi_raw.sort_values('date_dt', ascending=False)['mo'].unique()
-        sel = st.sidebar.selectbox(f"Select Period", available)
-        k_f = kpi_raw[kpi_raw['mo'] == sel]
-        if freq == "Monthly": d_f = dsat_raw[dsat_raw['date_dt'].dt.strftime('%B %Y') == sel] if not dsat_raw.empty else dsat_raw
-        else: d_f = dsat_raw[dsat_raw['date_dt'].dt.year == sel] if not dsat_raw.empty else dsat_raw
+        available = kpi_raw.sort_values('date_dt', ascending=False)['mo'].dropna().unique()
+        if len(available) > 0:
+            sel = st.sidebar.selectbox(f"Select Period", available)
+            k_f = kpi_raw[kpi_raw['mo'] == sel]
+            if freq == "Monthly": d_f = dsat_raw[dsat_raw['date_dt'].dt.strftime('%B %Y') == sel] if not dsat_raw.empty else dsat_raw.copy()
+            else: d_f = dsat_raw[dsat_raw['date_dt'].dt.year == sel] if not dsat_raw.empty else dsat_raw.copy()
+        else: k_f, d_f = kpi_raw.copy(), dsat_raw.copy()
 else:
-    k_f, d_f = pd.DataFrame(), pd.DataFrame()
+    k_f, d_f = kpi_raw.copy(), dsat_raw.copy()
 
 # --- 6. HIERARCHY DRILL-DOWN ---
 access = str(user.get('level', 'IC')).strip()
@@ -175,11 +200,10 @@ scoped_emails = []
 if access == "Admin":
     view_mode = st.sidebar.selectbox("Organization View", ["Entire Organisation", "Jarvis Sokolowich", "Sumit Ludhwani"])
     if view_mode == "Entire Organisation": 
-        scoped_emails = team_db['email'].unique().tolist()
+        scoped_emails = team_db['email'].dropna().unique().tolist()
     else:
         mgrs = team_db[team_db['mgr'] == view_mode]['name'].dropna().unique().tolist()
-        if not mgrs:
-            scoped_emails = team_db['email'].unique().tolist()
+        if not mgrs: scoped_emails = team_db['email'].dropna().unique().tolist()
         else:
             mgr_sel = st.sidebar.selectbox(f"Managers under {view_mode}", ["All Teams"] + mgrs)
             if mgr_sel == "All Teams": 
@@ -223,7 +247,7 @@ st.success(f"Welcome **{user.get('name', 'User')}**!! | Access Level : **{access
 tabs = st.tabs(["📊 Performance Overview", "🚫 DSAT Analysis & Feedback"] + (["🏆 Leaderboards"] if access != "IC" else []))
 
 with tabs[0]:
-    # STRICT CALCULATIONS: Shift Score = (Total Call Mins / Total IA Mins) * 100
+    # STRICT CALCULATIONS: Shift Score Formula exactly as requested
     tot_ia = f_kpi['ia_min'].sum() if not f_kpi.empty else 0
     tot_call = f_kpi['call_min'].sum() if not f_kpi.empty else 0
     avg_score = (tot_call / tot_ia * 100) if tot_ia > 0 else 0
@@ -234,12 +258,15 @@ with tabs[0]:
     st.markdown("### Performance Summary")
     c1, c2, c3, c4, c5 = st.columns(5)
     
-    # STRICT CALCULATIONS: Survey Averages EXCLUDING Blanks (NaNs)
-    avg_sent = f_kpi['sent_rate'].dropna().mean() if not f_kpi['sent_rate'].dropna().empty else 0
-    avg_sat = f_kpi['sat_rate'].dropna().mean() if not f_kpi['sat_rate'].dropna().empty else 0
+    # STRICT CALCULATIONS: Survey Averages EXCLUDING Blanks (NaNs) and 0 Surveys
+    sent_rates = f_kpi['sent_rate'].dropna() if 'sent_rate' in f_kpi.columns else pd.Series([])
+    avg_sent = sent_rates.mean() if not sent_rates.empty else 0
     
-    tot_ob = int(f_kpi['ob'].sum()) if not f_kpi.empty else 0
-    tot_qa = int(f_kpi['qa'].sum()) if not f_kpi.empty else 0
+    sat_rates = f_kpi['sat_rate'].dropna() if 'sat_rate' in f_kpi.columns else pd.Series([])
+    avg_sat = sat_rates.mean() if not sat_rates.empty else 0
+    
+    tot_ob = int(f_kpi['ob'].fillna(0).sum()) if not f_kpi.empty else 0
+    tot_qa = int(f_kpi['qa'].fillna(0).sum()) if not f_kpi.empty else 0
     
     c1.markdown(create_metric_card("Avg Survey Sent", avg_sent, 85, True), unsafe_allow_html=True)
     c2.markdown(create_metric_card("Avg Satisfied Survey", avg_sat, 90, True), unsafe_allow_html=True)
@@ -249,7 +276,6 @@ with tabs[0]:
 
     st.markdown("### Performance Trends")
     if not f_kpi.empty:
-        # Custom Aggregation for Trends to match exact formulas
         trend = f_kpi.groupby('date_dt').agg(
             sent_rate=('sent_rate', lambda x: x.dropna().mean()),
             sat_rate=('sat_rate', lambda x: x.dropna().mean()),
@@ -259,7 +285,6 @@ with tabs[0]:
             call_min=('call_min', 'sum')
         ).reset_index().sort_values('date_dt')
         
-        # Calculate Shift score dynamically for the trend line
         trend['shift_score'] = np.where(trend['ia_min'] > 0, (trend['call_min'] / trend['ia_min']) * 100, 0)
         
         t1, t2 = st.columns(2)
@@ -320,7 +345,7 @@ with tabs[1]:
 if access != "IC":
     with tabs[2]:
         if not f_kpi.empty:
-            # Custom Aggregation to strictly match the new formulas
+            # Custom Aggregation to strictly exclude blanks (NaNs) in the leaderboard averages
             ldb = f_kpi.groupby('name').agg(
                 sent_rate=('sent_rate', lambda x: x.dropna().mean()),
                 sat_rate=('sat_rate', lambda x: x.dropna().mean()),
@@ -328,7 +353,6 @@ if access != "IC":
                 ob=('ob', 'sum')
             ).reset_index()
             
-            # Format UI displays safely
             ldb['sent_rate'] = ldb['sent_rate'].fillna(0).round(2)
             ldb['sat_rate'] = ldb['sat_rate'].fillna(0).round(2)
             ldb['qa'] = ldb['qa'].fillna(0)
@@ -365,4 +389,3 @@ if access != "IC":
 
 st.sidebar.divider()
 if st.sidebar.button("Logout"): st.session_state.auth = None; st.rerun()
-    
