@@ -106,9 +106,9 @@ def create_metric_card(title, value, target=None, is_percent=True):
     target_str = f"Target: {target}{'%' if is_percent else ''}" if target else "Activity Metric"
     
     html = f"""
-    <div style="background-color: var(--secondary-background-color); padding: 20px; border-radius: 12px; border-left: 6px solid {color}; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); margin-bottom: 1rem;">
+    <div style="background-color: var(--secondary-background-color); padding: 15px; border-radius: 12px; border-left: 6px solid {color}; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); margin-bottom: 1rem;">
         <p style="color: gray; font-size: 14px; margin-bottom: 5px; font-weight: 600;">{title}</p>
-        <h2 style="color: {color}; margin-top: 0; margin-bottom: 0; font-size: 32px;">{val_str}</h2>
+        <h2 style="color: {color}; margin-top: 0; margin-bottom: 0; font-size: 28px;">{val_str}</h2>
         <p style="color: gray; font-size: 12px; margin-top: 5px;">{target_str}</p>
     </div>
     """
@@ -251,7 +251,7 @@ with tabs[0]:
     st.info(f"In the selected timeframe, the group maintains an average Shift Score of **{avg_score:.2f}%**. Monitoring trends indicate consistent engagement during active operations.")
     
     st.markdown("### Performance Summary")
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     
     # STRICT CALCULATIONS: Survey Averages EXCLUDING Blanks (NaNs)
     sent_rates = f_kpi['sent_rate'].dropna() if 'sent_rate' in f_kpi.columns else pd.Series([])
@@ -260,14 +260,16 @@ with tabs[0]:
     sat_rates = f_kpi['sat_rate'].dropna() if 'sat_rate' in f_kpi.columns else pd.Series([])
     avg_sat = sat_rates.mean() if not sat_rates.empty else 0
     
+    tot_surveys = int(f_kpi['surveys'].fillna(0).sum()) if not f_kpi.empty else 0
     tot_ob = int(f_kpi['ob'].fillna(0).sum()) if not f_kpi.empty else 0
     tot_qa = int(f_kpi['qa'].fillna(0).sum()) if not f_kpi.empty else 0
     
     c1.markdown(create_metric_card("Avg Survey Sent", avg_sent, 85, True), unsafe_allow_html=True)
-    c2.markdown(create_metric_card("Avg Satisfied Survey", avg_sat, 90, True), unsafe_allow_html=True)
+    c2.markdown(create_metric_card("Avg Satisfied", avg_sat, 90, True), unsafe_allow_html=True)
     c3.markdown(create_metric_card("Avg Shift Score", avg_score, 85, True), unsafe_allow_html=True)
-    c4.markdown(create_metric_card("Total OB Calls", tot_ob, None, False), unsafe_allow_html=True)
-    c5.markdown(create_metric_card("Total QA Calls", tot_qa, None, False), unsafe_allow_html=True)
+    c4.markdown(create_metric_card("Total Surveys", tot_surveys, None, False), unsafe_allow_html=True)
+    c5.markdown(create_metric_card("Total OB Calls", tot_ob, None, False), unsafe_allow_html=True)
+    c6.markdown(create_metric_card("Total QA Calls", tot_qa, None, False), unsafe_allow_html=True)
 
     st.markdown("### Performance Trends")
     if not f_kpi.empty:
