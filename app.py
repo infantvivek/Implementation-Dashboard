@@ -70,45 +70,47 @@ def load_and_standardize(url, sheet_type):
             "totalsurvey": "surveys", "timestamp": "ts_raw", "processed": "date_raw", "chatdsaturl": "link", "datelevelas": "date_raw"
         }
         df = df.rename(columns=rmap)
-        if 'email' in df.columns: df['email'] = df['email'].astype(str).str.strip().str.lower()
+        
+        # Ensure Critical Columns Exist to Prevent KeyErrors
+        if 'email' not in df.columns: df['email'] = ""
+        df['email'] = df['email'].astype(str).str.strip().str.lower()
         
         if sheet_type == "KPI":
-            # 1. Coerce empty strings and non-numbers to NaN
-            for col in ['sent_rate', 'sat_rate', 'surveys']:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', ''), errors='coerce')
-            
-            # 2. Fix Decimal to Percentage format
+            # Extract numbers safely, leaving actual blanks as NaN
+            for col in ['sent_rate', 'sat_rate', 'ob', 'qa', 'surveys', 'name', 'mgr']:
+                if col not in df.columns: df[col] = np.nan
+                
             for col in ['sent_rate', 'sat_rate']:
-                if col in df.columns and df[col].max() <= 1.1: 
-                    df[col] = df[col] * 100
+                df[col] = df[col].replace(r'^\s*$', np.nan, regex=True) # Ensure space-only cells are NaN
+                df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', ''), errors='coerce')
+                # Fix Decimal to Percentage format securely
+                if df[col].max() <= 1.1: df[col] = df[col] * 100
             
-            # 3. CRITICAL FIX: Omit rates completely if total surveys are 0 or blank
-            if 'surveys' in df.columns:
-                mask = (df['surveys'] == 0) | (df['surveys'].isna())
-                if 'sat_rate' in df.columns: df.loc[mask, 'sat_rate'] = np.nan
-                if 'sent_rate' in df.columns: df.loc[mask, 'sent_rate'] = np.nan
-            
-            # 4. Dates & Durations
             df['date_dt'] = pd.to_datetime(df['date_raw'], format="%b'%d'%y", errors='coerce') if 'date_raw' in df.columns else pd.NaT
             df['ia_min'] = df['ia_raw'].apply(parse_duration) if 'ia_raw' in df.columns else 0
             df['call_min'] = df['call_raw'].apply(parse_duration) if 'call_raw' in df.columns else 0
             df['shift_score'] = np.where(df['ia_min'] > 0, (df['call_min']/df['ia_min']*100), np.nan)
-            
+        
         if sheet_type == "DSAT":
-            df['date_dt'] = pd.to_datetime(df['date_raw'] if 'date_raw' in df.columns else df['ts_raw'], errors='coerce')
+            if 'date_raw' in df.columns: df['date_dt'] = pd.to_datetime(df['date_raw'], errors='coerce')
+            elif 'ts_raw' in df.columns: df['date_dt'] = pd.to_datetime(df['ts_raw'], errors='coerce')
+            else: df['date_dt'] = pd.NaT
+            for col in ['type', 'feedback', 'link']:
+                if col not in df.columns: df[col] = "-"
             
         return df
     except Exception as e:
-        return pd.DataFrame()
+        # Graceful fallback structure
+        if sheet_type == "KPI": return pd.DataFrame(columns=['email', 'date_dt', 'shift_score', 'sent_rate', 'sat_rate', 'ob', 'qa', 'surveys', 'name', 'mgr'])
+        if sheet_type == "DSAT": return pd.DataFrame(columns=['email', 'date_dt', 'type', 'feedback', 'link'])
+        return pd.DataFrame(columns=['email', 'name', 'mgr', 'pass', 'level'])
 
 def create_metric_card(title, value, target=None, is_percent=True):
     if target:
         if value >= target: color = "#22C55E" # Green
         elif value >= target - 15: color = "#F59E0B" # Yellow
         else: color = "#EF4444" # Red
-    else:
-        color = "#0052FF" # Default Blue
+    else: color = "#0052FF" # Default Blue
 
     val_str = f"{value:.2f}%" if is_percent else f"{int(value):,}"
     target_str = f"Target: {target}{'%' if is_percent else ''}" if target else "Activity Metric"
@@ -124,8 +126,7 @@ def create_metric_card(title, value, target=None, is_percent=True):
 
 @st.dialog("Update Feedback & Type", width="large")
 def open_form_dialog(row):
-    fb = row.get('feedback', '')
-    tp = row.get('type', '')
+    fb, tp = row.get('feedback', ''), row.get('type', '')
     params = {
         ENTRY_KEY: row.get('link', ''),
         ENTRY_FEEDBACK: fb if str(fb) != "nan" and fb != "-" else "",
@@ -247,7 +248,8 @@ st.success(f"Welcome **{user.get('name', 'User')}**!! | Access Level : **{access
 tabs = st.tabs(["📊 Performance Overview", "🚫 DSAT Analysis & Feedback"] + (["🏆 Leaderboards"] if access != "IC" else []))
 
 with tabs[0]:
-    # STRICT CALCULATIONS: Shift Score Formula exactly as requested
+    # STRICT CALCULATIONS
+    # Shift Score: (Total Call Minutes / Total IA Minutes) * 100
     tot_ia = f_kpi['ia_min'].sum() if not f_kpi.empty else 0
     tot_call = f_kpi['call_min'].sum() if not f_kpi.empty else 0
     avg_score = (tot_call / tot_ia * 100) if tot_ia > 0 else 0
@@ -258,12 +260,9 @@ with tabs[0]:
     st.markdown("### Performance Summary")
     c1, c2, c3, c4, c5 = st.columns(5)
     
-    # STRICT CALCULATIONS: Survey Averages EXCLUDING Blanks (NaNs) and 0 Surveys
-    sent_rates = f_kpi['sent_rate'].dropna() if 'sent_rate' in f_kpi.columns else pd.Series([])
-    avg_sent = sent_rates.mean() if not sent_rates.empty else 0
-    
-    sat_rates = f_kpi['sat_rate'].dropna() if 'sat_rate' in f_kpi.columns else pd.Series([])
-    avg_sat = sat_rates.mean() if not sat_rates.empty else 0
+    # Survey Averages: Purely average the non-blank cells across the scoped dataframe
+    avg_sent = f_kpi['sent_rate'].dropna().mean() if not f_kpi['sent_rate'].dropna().empty else 0
+    avg_sat = f_kpi['sat_rate'].dropna().mean() if not f_kpi['sat_rate'].dropna().empty else 0
     
     tot_ob = int(f_kpi['ob'].fillna(0).sum()) if not f_kpi.empty else 0
     tot_qa = int(f_kpi['qa'].fillna(0).sum()) if not f_kpi.empty else 0
@@ -325,22 +324,18 @@ with tabs[1]:
         for idx, row in f_table.reset_index().iterrows():
             r = st.columns(col_w)
             date_str = str(row['date_dt'])[:10] if pd.notna(row['date_dt']) else "-"
-            fb = row.get('feedback', '-')
-            tp = row.get('type', '-')
+            fb, tp = row.get('feedback', '-'), row.get('type', '-')
             
             c_idx = 0
             r[c_idx].write(date_str); c_idx += 1
             r[c_idx].write(row.get('name', '-')); c_idx += 1
-            
             if access == "Admin": r[c_idx].write(row.get('mgr', '-')); c_idx += 1
-                
             r[c_idx].markdown(f"[🔗 View Chat Context]({row.get('link', '#')})"); c_idx += 1
             r[c_idx].write(tp if str(tp) != 'nan' and tp != "" else "-"); c_idx += 1
             r[c_idx].write(fb if str(fb) != 'nan' and fb != "" else "-"); c_idx += 1
             
-            if access != "IC":
-                if r[c_idx].button("📝 Update", key=f"upd_{idx}"):
-                    open_form_dialog(row)
+            if access != "IC" and r[c_idx].button("📝 Update", key=f"upd_{idx}"):
+                open_form_dialog(row)
 
 if access != "IC":
     with tabs[2]:
