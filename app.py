@@ -41,6 +41,9 @@ st.markdown("""
     /* Tabs Styling */
     .stTabs [aria-selected="true"] { background-color: var(--ghl-blue) !important; color: white !important; border-radius: 8px; }
     div.stInfo { background-color: rgba(0, 82, 255, 0.05); border-left: 5px solid #0052FF; color: var(--text-color); border-radius: 10px; padding: 15px; }
+    
+    /* Center align main header image */
+    .ghl-header-img { margin-bottom: 10px; filter: drop-shadow(0px 4px 6px rgba(0,0,0,0.1)); }
     </style>
 """, unsafe_allow_html=True)
 
@@ -137,7 +140,7 @@ team_db = load_and_standardize(TEAM_URL, "TEAM")
 if not st.session_state.auth:
     col_l, col_r = st.columns([1, 4])
     with col_l: st.image(LOGO_URL, width=150)
-    with col_r: st.title("Implementation Team Performance Hub")
+    with col_r: st.title("HighLevel Performance Hub")
     with st.form("login"):
         u_email = st.text_input("Work Email").lower().strip()
         u_pass = st.text_input("Password", type="password")
@@ -234,7 +237,14 @@ f_kpi = k_f[k_f['email'].isin(scoped_emails)]
 f_dsat = d_f[d_f['email'].isin(scoped_emails)]
 
 # --- 7. MAIN UI ---
-st.title("Implementation Team Performance Hub")
+
+# Branded Header
+header_col1, header_col2 = st.columns([1, 10])
+with header_col1:
+    st.image(LOGO_URL, width=80)
+with header_col2:
+    st.title("Implementation Team Performance Hub")
+
 st.success(f"Welcome **{user.get('name', 'User')}**!! | Access Level : **{access}**")
 
 tabs_list = ["📊 Performance Overview", "🚫 DSAT Analysis & Feedback", "📄 Detailed Report"]
