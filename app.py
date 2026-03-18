@@ -5,7 +5,7 @@ import plotly.express as px
 import urllib.parse
 import re
 import base64
-import time  # <--- ADD THIS NEW IMPORT
+import time
 from streamlit.components.v1 import iframe
 
 # --- 1. CONFIGURATION & URLS ---
@@ -15,8 +15,7 @@ DSAT_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSU-KDmKs9i1EIEuIuJT
 LOGO_URL = "https://s3.amazonaws.com/cdn.freshdesk.com/data/helpdesk/attachments/production/48175265495/original/PTXBCP40UHx-8LCKsM1zqLX-pq8nndFHSw.png?1641235482"
 
 # --- GOOGLE FORM CONFIGURATION ---
-FORM_ID = "1FAIpQLSdu2gEmHPZBCoUZ1naQlGTeJtgTgB47YfCENCfeKAHU1OA76g" # Replace with your actual Form ID
-#https://docs.google.com/forms/d/e/1FAIpQLSdu2gEmHPZBCoUZ1naQlGTeJtgTgB47YfCENCfeKAHU1OA76g/viewform?usp=pp_url&entry.1726897360=test&entry.1303252108=Controllable&entry.1754509958=testbmbnm
+FORM_ID = "1FAIpQLSdu2gEmHPZBCoUZ1naQlGTeJtgTgB47YfCENCfeKAHU1OA76g" # Make sure to use the published 1FAIp... ID
 ENTRY_KEY = "entry.1726897360"       
 ENTRY_TYPE = "entry.1303252108"      
 ENTRY_FEEDBACK = "entry.1754509958"  
@@ -31,21 +30,17 @@ st.markdown("""
     
     :root { --ghl-blue: #0052FF; }
 
-    /* Standard App Metrics */
     .stMetric { background-color: var(--secondary-background-color); padding: 20px; border-radius: 12px; border: 1px solid rgba(0, 82, 255, 0.1); box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05); }
     
-    /* GHL Sidebar Branding - Adaptive to Light/Dark Mode */
     [data-testid="stSidebarNav"]::before {
         content: ""; display: block; background-image: url('""" + LOGO_URL + """');
         background-size: contain; background-repeat: no-repeat;
         width: 170px; height: 50px; margin: 25px 0 10px 25px; filter: brightness(0) invert(1); 
     }
     
-    /* Tabs Styling */
     .stTabs [aria-selected="true"] { background-color: var(--ghl-blue) !important; color: white !important; border-radius: 8px; }
     div.stInfo { background-color: rgba(0, 82, 255, 0.05); border-left: 5px solid #0052FF; color: var(--text-color); border-radius: 10px; padding: 15px; }
     
-    /* Center align main header image */
     .ghl-header-img { margin-bottom: 10px; filter: drop-shadow(0px 4px 6px rgba(0,0,0,0.1)); }
     </style>
 """, unsafe_allow_html=True)
@@ -87,6 +82,7 @@ def load_and_standardize(url, sheet_type):
             df['date_dt'] = pd.to_datetime(df['date_raw'], format="%b'%d'%y", errors='coerce')
             df['ia_min'] = df['ia_raw'].apply(parse_duration) if 'ia_raw' in df.columns else 0
             df['call_min'] = df['call_raw'].apply(parse_duration) if 'call_raw' in df.columns else 0
+            
             df['shift_score'] = np.where(df['ia_min'] > 0, (df['call_min']/df['ia_min']*100), np.nan)
         
         if sheet_type == "DSAT":
@@ -102,7 +98,7 @@ def create_metric_card(title, value, target=None, is_percent=True):
         elif value >= target - 15: color = "#F59E0B" # Yellow
         else: color = "#EF4444" # Red
     else:
-        color = "#0052FF" # Default Blue
+        color = "#0052FF" # Default HighLevel Blue
 
     val_str = f"{value:.2f}%" if is_percent else f"{int(value):,}"
     target_str = f"Target: {target}{'%' if is_percent else ''}" if target else "Activity Metric"
@@ -131,29 +127,43 @@ def open_form_dialog(row):
     st.caption("Submit updates below to push them directly to the Google Sheet backend.")
     iframe(url, height=550, scrolling=True)
     
-    if st.button("Close & Sync Dashboard", use_container_width=True):
-        # 1. Give Google Apps Script 2 seconds to write the data to the sheet
-        time.sleep(2) 
-        # 2. Wipe Streamlit's memory so it is forced to fetch the newest data
-        st.cache_data.clear() 
-        # 3. Refresh the app
+    # RELOAD FIX: Forces cache wipe and waits 2 seconds for Google to sync
+    if st.button("Close & Sync Dashboard", use_container_width=True): 
+        with st.spinner("Syncing data from Google Sheets..."):
+            time.sleep(2)
+            st.cache_data.clear()
         st.rerun()
 
-# --- 4. AUTHENTICATION (BULLETPROOF URL SESSIONS) ---
+# --- 4. AUTHENTICATION & SESSION TIMEOUT (15 MINS) ---
 if 'auth' not in st.session_state: st.session_state.auth = None
 team_db = load_and_standardize(TEAM_URL, "TEAM")
 
-# 1. Check URL for existing session (Bypasses all browser cookie blockers)
+# 1. Check URL for existing session
 if not st.session_state.auth and 'session' in st.query_params:
     try:
         decoded_email = base64.b64decode(st.query_params['session']).decode('utf-8')
         match = team_db[team_db['email'] == decoded_email]
         if not match.empty:
             st.session_state.auth = match.iloc[0].to_dict()
+            st.session_state.last_active = time.time()
     except Exception:
         pass
 
-# 2. Show Login screen if no active session is found
+# 2. INACTIVITY TIMEOUT LOGIC
+if st.session_state.auth:
+    current_time = time.time()
+    if 'last_active' in st.session_state:
+        # 15 minutes = 900 seconds
+        if current_time - st.session_state.last_active > 900:
+            st.session_state.auth = None
+            st.query_params.clear()
+            st.warning("⚠️ Your session has expired due to inactivity. Please log in again.")
+            st.stop() # Halts script and shows login screen below
+            
+    # Reset the timer on any user interaction (refresh, click, filter)
+    st.session_state.last_active = current_time
+
+# 3. Show Login screen if no active session is found
 if not st.session_state.auth:
     col_l, col_r = st.columns([1, 4])
     with col_l: st.image(LOGO_URL, width=150)
@@ -167,11 +177,11 @@ if not st.session_state.auth:
             match = team_db[(team_db['email'] == u_email) & (team_db['pass'].astype(str) == str(u_pass))]
             if not match.empty:
                 st.session_state.auth = match.iloc[0].to_dict()
+                st.session_state.last_active = time.time()
                 
                 # Create a secure URL Token
                 token = base64.b64encode(u_email.encode('utf-8')).decode('utf-8')
                 st.query_params['session'] = token
-                
                 st.rerun()
             else: 
                 st.error("Invalid credentials.")
@@ -269,11 +279,25 @@ with header_col2: st.title("Implementation Team Performance Hub")
 
 st.success(f"Welcome **{user.get('name', 'User')}**!! | Access Level : **{access}**")
 
-tabs_list = ["📊 Performance Overview", "🚫 DSAT Analysis & Feedback", "📄 Detailed Report"]
-if access != "IC": tabs_list.append("🏆 Leaderboards")
-tabs = st.tabs(tabs_list)
+# DYNAMIC TAB ORDERING
+tabs_list = ["📊 Performance Overview", "🚫 DSAT Analysis & Feedback"]
+if access != "IC":
+    tabs_list.append("🏆 Leaderboards") # Leaderboard is 3rd for Admins/Managers
+tabs_list.append("📄 Detailed Report") # Detailed Report is Last
 
-with tabs[0]:
+# Generate the tabs based on the list
+ui_tabs = st.tabs(tabs_list)
+tab_perf = ui_tabs[0]
+tab_dsat = ui_tabs[1]
+
+if access != "IC":
+    tab_lead = ui_tabs[2]
+    tab_report = ui_tabs[3]
+else:
+    tab_lead = None
+    tab_report = ui_tabs[2]
+
+with tab_perf:
     tot_ia = f_kpi['ia_min'].sum() if not f_kpi.empty else 0
     tot_call = f_kpi['call_min'].sum() if not f_kpi.empty else 0
     avg_score = (tot_call / tot_ia * 100) if tot_ia > 0 else 0
@@ -323,7 +347,7 @@ with tabs[0]:
         with t4: st.plotly_chart(px.bar(trend, x='date_dt', y='ob', title="Total OB Calls"), use_container_width=True)
         with t5: st.plotly_chart(px.bar(trend, x='date_dt', y='qa', title="Total OH Calls"), use_container_width=True)
 
-with tabs[1]:
+with tab_dsat:
     st.markdown("### DSAT Summary")
     fb_col = f_dsat['feedback'].astype(str).str.strip().str.lower() if 'feedback' in f_dsat.columns else pd.Series([])
     pending = len(fb_col[fb_col.isin(["nan", "-", ""])])
@@ -367,51 +391,8 @@ with tabs[1]:
                 if r[c_idx].button("📝 Update", key=f"upd_{idx}"):
                     open_form_dialog(row)
 
-with tabs[2]:
-    st.markdown("### 📄 Detailed KPI Report")
-    st.caption(f"Comprehensive view of daily metrics for the selected time range. Data is scoped by your role and filter selections.")
-    
-    if not f_kpi.empty:
-        rep_df = pd.DataFrame()
-        rep_df['Date'] = f_kpi['date_dt'].dt.strftime('%Y-%m-%d')
-        rep_df['Advisor Name'] = f_kpi['name']
-        
-        if access != "IC":
-            rep_df['Manager'] = f_kpi['mgr']
-            
-        if 'shift' in f_kpi.columns: rep_df['Shift'] = f_kpi['shift']
-        rep_df['IA'] = f_kpi['ia_raw']
-        rep_df['Call Time'] = f_kpi['call_raw']
-        rep_df['Shift Score %'] = f_kpi['shift_score'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "-")
-        
-        rep_df['OB Calls'] = f_kpi['ob'].fillna(0).astype(int)
-        rep_df['QA Calls'] = f_kpi['qa'].fillna(0).astype(int)
-        if 'mob' in f_kpi.columns: rep_df['MOB'] = f_kpi['mob'].fillna(0).astype(int)
-        
-        rep_df['Total Survey'] = f_kpi['surveys'].fillna(0).astype(int)
-        rep_df['Survey Sent %'] = f_kpi['sent_rate'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "-")
-        rep_df['Satisfied Survey %'] = f_kpi['sat_rate'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "-")
-        
-        if 'avgobcalltime' in f_kpi.columns: rep_df['Avg OB Call Time'] = f_kpi['avgobcalltime'].fillna("-")
-        if 'avgqacalltime' in f_kpi.columns: rep_df['Avg QA Call Time'] = f_kpi['avgqacalltime'].fillna("-")
-        if 'timeoff' in f_kpi.columns: rep_df['Time Off'] = f_kpi['timeoff'].fillna("-")
-        if 'callabandons' in f_kpi.columns: rep_df['Call Abandons'] = f_kpi['callabandons'].fillna(0).astype(int)
-        if 'ticketscreated' in f_kpi.columns: rep_df['Tickets Created'] = f_kpi['ticketscreated'].fillna(0).astype(int)
-        
-        st.dataframe(rep_df, hide_index=True, use_container_width=True)
-        
-        csv_data = rep_df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Download Detailed Report CSV",
-            data=csv_data,
-            file_name="detailed_performance_report.csv",
-            mime="text/csv",
-        )
-    else:
-        st.info("No data available for the selected filters.")
-
-if access != "IC":
-    with tabs[3]:
+if tab_lead:
+    with tab_lead:
         if not f_kpi.empty:
             ldb = f_kpi.groupby('name').agg(
                 sent_rate=('sent_rate', lambda x: x.dropna().mean()),
@@ -454,10 +435,52 @@ if access != "IC":
                 st.markdown("#### 🚀 OB Expert")
                 st.dataframe(ldb.sort_values('ob', ascending=False)[['name', 'ob']].rename(columns={'name': 'Advisor Name', 'ob': 'Total OB Calls'}), hide_index=True, use_container_width=True)
 
+with tab_report:
+    st.markdown("### 📄 Detailed KPI Report")
+    st.caption(f"Comprehensive view of daily metrics for the selected time range. Data is scoped by your role and filter selections.")
+    
+    if not f_kpi.empty:
+        rep_df = pd.DataFrame()
+        rep_df['Date'] = f_kpi['date_dt'].dt.strftime('%Y-%m-%d')
+        rep_df['Advisor Name'] = f_kpi['name']
+        
+        if access != "IC":
+            rep_df['Manager'] = f_kpi['mgr']
+            
+        if 'shift' in f_kpi.columns: rep_df['Shift'] = f_kpi['shift']
+        rep_df['IA'] = f_kpi['ia_raw']
+        rep_df['Call Time'] = f_kpi['call_raw']
+        rep_df['Shift Score %'] = f_kpi['shift_score'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "-")
+        
+        rep_df['OB Calls'] = f_kpi['ob'].fillna(0).astype(int)
+        rep_df['QA Calls'] = f_kpi['qa'].fillna(0).astype(int)
+        if 'mob' in f_kpi.columns: rep_df['MOB'] = f_kpi['mob'].fillna(0).astype(int)
+        
+        rep_df['Total Survey'] = f_kpi['surveys'].fillna(0).astype(int)
+        rep_df['Survey Sent %'] = f_kpi['sent_rate'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "-")
+        rep_df['Satisfied Survey %'] = f_kpi['sat_rate'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "-")
+        
+        if 'avgobcalltime' in f_kpi.columns: rep_df['Avg OB Call Time'] = f_kpi['avgobcalltime'].fillna("-")
+        if 'avgqacalltime' in f_kpi.columns: rep_df['Avg QA Call Time'] = f_kpi['avgqacalltime'].fillna("-")
+        if 'timeoff' in f_kpi.columns: rep_df['Time Off'] = f_kpi['timeoff'].fillna("-")
+        if 'callabandons' in f_kpi.columns: rep_df['Call Abandons'] = f_kpi['callabandons'].fillna(0).astype(int)
+        if 'ticketscreated' in f_kpi.columns: rep_df['Tickets Created'] = f_kpi['ticketscreated'].fillna(0).astype(int)
+        
+        st.dataframe(rep_df, hide_index=True, use_container_width=True)
+        
+        csv_data = rep_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Download Detailed Report CSV",
+            data=csv_data,
+            file_name="detailed_performance_report.csv",
+            mime="text/csv",
+        )
+    else:
+        st.info("No data available for the selected filters.")
+
 # --- 8. LOGOUT (WIPES URL SESSION) ---
 st.sidebar.divider()
 if st.sidebar.button("Logout"): 
     st.session_state.auth = None
     st.query_params.clear()
     st.rerun()
-    
