@@ -14,7 +14,7 @@ DSAT_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSU-KDmKs9i1EIEuIuJT
 LOGO_URL = "https://s3.amazonaws.com/cdn.freshdesk.com/data/helpdesk/attachments/production/48175265495/original/PTXBCP40UHx-8LCKsM1zqLX-pq8nndFHSw.png?1641235482"
 
 # --- GOOGLE FORM CONFIGURATION ---
-FORM_ID = "1I3pOczioxWQQAbhz3yuqwGNADl9BbJiYnCBJpxNvE7w" # Replace with your actual Form ID
+FORM_ID = "1FAIpQLSdu2gEmHPZBCoUZ1naQlGTeJtgTgB47YfCENCfeKAHU1OA76g" # Replace with your actual Form ID
 #https://docs.google.com/forms/d/e/1FAIpQLSdu2gEmHPZBCoUZ1naQlGTeJtgTgB47YfCENCfeKAHU1OA76g/viewform?usp=pp_url&entry.1726897360=test&entry.1303252108=Controllable&entry.1754509958=testbmbnm
 ENTRY_KEY = "entry.1726897360"       
 ENTRY_TYPE = "entry.1303252108"      
