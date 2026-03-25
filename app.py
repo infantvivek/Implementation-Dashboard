@@ -457,9 +457,9 @@ with tab_report:
         if 'callabandons' in f_kpi.columns: rep_df['Call Abandons'] = f_kpi['callabandons'].fillna(0).astype(int)
         if 'ticketscreated' in f_kpi.columns: rep_df['Tickets Created'] = f_kpi['ticketscreated'].fillna(0).astype(int)
         
-        # --- NEW: AVERAGES & TOTALS SUMMARY ROW ---
+        # --- NEW: BOLD AVERAGES & TOTALS SUMMARY ROW ---
         avg_row = {col: "" for col in rep_df.columns}
-        avg_row['Date'] = "AVERAGES & TOTALS"
+        avg_row['Date'] = "AVG & TOTALS" # Shortened text to prevent truncation
         
         avg_ia = f_kpi['ia_min'].mean()
         avg_row['IA'] = f"{int(avg_ia // 60)}h {int(avg_ia % 60)}m" if pd.notna(avg_ia) else "-"
@@ -503,18 +503,18 @@ with tab_report:
         
         # Append the summary row to the bottom of the DataFrame
         rep_df = pd.concat([rep_df, pd.DataFrame([avg_row])], ignore_index=True)
-        # ------------------------------------------
+        
+        # Style the dataframe to make the last row bold and slightly highlighted
+        def highlight_last_row(row):
+            if row.name == rep_df.index[-1]:
+                return ['font-weight: bold; background-color: rgba(0, 82, 255, 0.05)'] * len(row)
+            return [''] * len(row)
 
-   # Converts the dataframe to HTML and applies CSS to wrap text and bold the final row
-        html_table = rep_df.to_html(index=False, classes='table table-striped', justify='center')
-        custom_css = """
-        <style>
-        .table { width: 100%; text-align: left; }
-        .table th, .table td { padding: 8px; border-bottom: 1px solid #ddd; white-space: normal !important; word-wrap: break-word; }
-        .table tr:last-child { font-weight: bold; background-color: rgba(0, 82, 255, 0.1); }
-        </style>
-        """
-        st.markdown(custom_css + html_table, unsafe_allow_html=True)
+        styled_df = rep_df.style.apply(highlight_last_row, axis=1)
+
+        # Render the styled dataframe
+        st.dataframe(styled_df, hide_index=True, use_container_width=True)
+        # ------------------------------------------
         
         csv_data = rep_df.to_csv(index=False).encode('utf-8')
         st.download_button(
