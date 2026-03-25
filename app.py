@@ -505,7 +505,16 @@ with tab_report:
         rep_df = pd.concat([rep_df, pd.DataFrame([avg_row])], ignore_index=True)
         # ------------------------------------------
 
-        st.dataframe(rep_df, hide_index=True, use_container_width=True)
+   # Converts the dataframe to HTML and applies CSS to wrap text and bold the final row
+        html_table = rep_df.to_html(index=False, classes='table table-striped', justify='center')
+        custom_css = """
+        <style>
+        .table { width: 100%; text-align: left; }
+        .table th, .table td { padding: 8px; border-bottom: 1px solid #ddd; white-space: normal !important; word-wrap: break-word; }
+        .table tr:last-child { font-weight: bold; background-color: rgba(0, 82, 255, 0.1); }
+        </style>
+        """
+        st.markdown(custom_css + html_table, unsafe_allow_html=True)
         
         csv_data = rep_df.to_csv(index=False).encode('utf-8')
         st.download_button(
