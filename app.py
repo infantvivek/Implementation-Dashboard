@@ -198,7 +198,6 @@ if not kpi_raw.empty:
         else: k_f, d_f = kpi_raw.copy(), dsat_raw.copy()
         
     elif freq == "Weekly":
-        # FIX: W-SAT forces the week to end on Saturday (and start on Sunday)
         kpi_raw['wk'] = kpi_raw['date_dt'].dt.to_period('W-SAT').apply(lambda r: r.start_time)
         available = sorted(kpi_raw['wk'].dropna().unique(), reverse=True)
         if available:
@@ -458,6 +457,54 @@ with tab_report:
         if 'callabandons' in f_kpi.columns: rep_df['Call Abandons'] = f_kpi['callabandons'].fillna(0).astype(int)
         if 'ticketscreated' in f_kpi.columns: rep_df['Tickets Created'] = f_kpi['ticketscreated'].fillna(0).astype(int)
         
+        # --- NEW: AVERAGES & TOTALS SUMMARY ROW ---
+        avg_row = {col: "" for col in rep_df.columns}
+        avg_row['Date'] = "AVERAGES & TOTALS"
+        
+        avg_ia = f_kpi['ia_min'].mean()
+        avg_row['IA'] = f"{int(avg_ia // 60)}h {int(avg_ia % 60)}m" if pd.notna(avg_ia) else "-"
+        
+        avg_call = f_kpi['call_min'].mean()
+        avg_row['Call Time'] = f"{int(avg_call // 60)}h {int(avg_call % 60)}m" if pd.notna(avg_call) else "-"
+        
+        tot_ia = f_kpi['ia_min'].sum()
+        tot_call = f_kpi['call_min'].sum()
+        avg_shift = (tot_call / tot_ia * 100) if tot_ia > 0 else 0
+        avg_row['Shift Score %'] = f"{avg_shift:.2f}%"
+        
+        avg_row['OB Calls'] = int(f_kpi['ob'].fillna(0).sum())
+        avg_row['QA Calls'] = int(f_kpi['qa'].fillna(0).sum())
+        if 'MOB' in rep_df.columns: avg_row['MOB'] = int(f_kpi['mob'].fillna(0).sum())
+        
+        avg_row['Total Survey'] = int(f_kpi['surveys'].fillna(0).sum())
+        
+        avg_sent_val = f_kpi['sent_rate'].dropna().mean()
+        avg_row['Survey Sent %'] = f"{avg_sent_val:.2f}%" if pd.notna(avg_sent_val) else "-"
+        
+        avg_sat_val = f_kpi['sat_rate'].dropna().mean()
+        avg_row['Satisfied Survey %'] = f"{avg_sat_val:.2f}%" if pd.notna(avg_sat_val) else "-"
+        
+        if 'Avg OB Call Time' in rep_df.columns:
+            mean_td = pd.to_timedelta(f_kpi['avgobcalltime'].astype(str), errors='coerce').mean()
+            if pd.notna(mean_td):
+                ts = mean_td.total_seconds()
+                avg_row['Avg OB Call Time'] = f"{int(ts // 3600):02d}:{int((ts % 3600) // 60):02d}:{int(ts % 60):02d}"
+            else: avg_row['Avg OB Call Time'] = "-"
+            
+        if 'Avg QA Call Time' in rep_df.columns:
+            mean_td = pd.to_timedelta(f_kpi['avgqacalltime'].astype(str), errors='coerce').mean()
+            if pd.notna(mean_td):
+                ts = mean_td.total_seconds()
+                avg_row['Avg QA Call Time'] = f"{int(ts // 3600):02d}:{int((ts % 3600) // 60):02d}:{int(ts % 60):02d}"
+            else: avg_row['Avg QA Call Time'] = "-"
+            
+        if 'Call Abandons' in rep_df.columns: avg_row['Call Abandons'] = int(f_kpi['callabandons'].fillna(0).sum())
+        if 'Tickets Created' in rep_df.columns: avg_row['Tickets Created'] = int(f_kpi['ticketscreated'].fillna(0).sum())
+        
+        # Append the summary row to the bottom of the DataFrame
+        rep_df = pd.concat([rep_df, pd.DataFrame([avg_row])], ignore_index=True)
+        # ------------------------------------------
+
         st.dataframe(rep_df, hide_index=True, use_container_width=True)
         
         csv_data = rep_df.to_csv(index=False).encode('utf-8')
