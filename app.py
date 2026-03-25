@@ -60,8 +60,6 @@ def parse_duration(time_str):
 @st.cache_data(ttl=60)
 def load_and_standardize(url, sheet_type):
     try:
-        # MAGIC FIX: CACHE BUSTING 
-        # Appends a unique timestamp so Google NEVER gives us a stale cached CSV
         fresh_url = f"{url}&_t={int(time.time())}" if "?" in url else f"{url}?_t={int(time.time())}"
         
         df = pd.read_csv(fresh_url)
@@ -132,7 +130,6 @@ def open_form_dialog(row):
     
     if st.button("Close & Sync Dashboard", use_container_width=True): 
         with st.spinner("Syncing data from Google Sheets..."):
-            # Increased sleep to ensure Apps Script completely finishes writing
             time.sleep(3.5)
             st.cache_data.clear()
         st.rerun()
@@ -201,7 +198,8 @@ if not kpi_raw.empty:
         else: k_f, d_f = kpi_raw.copy(), dsat_raw.copy()
         
     elif freq == "Weekly":
-        kpi_raw['wk'] = kpi_raw['date_dt'].dt.to_period('W').apply(lambda r: r.start_time)
+        # FIX: W-SAT forces the week to end on Saturday (and start on Sunday)
+        kpi_raw['wk'] = kpi_raw['date_dt'].dt.to_period('W-SAT').apply(lambda r: r.start_time)
         available = sorted(kpi_raw['wk'].dropna().unique(), reverse=True)
         if available:
             sel = st.sidebar.selectbox("Select Week", available, format_func=lambda x: x.strftime('%d-%m-%Y'))
