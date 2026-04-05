@@ -20,7 +20,7 @@ ENTRY_KEY = "entry.1726897360"
 ENTRY_TYPE = "entry.1303252108"      
 ENTRY_FEEDBACK = "entry.1754509958"  
 
-st.set_page_config(layout="wide", page_title="HighLevel Performance Hub", page_icon="🚀")
+st.set_page_config(layout="wide", page_title="The Go-Getters Performance Hub", page_icon="🚀")
 
 # --- 2. SaaS/GHL THEME ENGINE ---
 st.markdown("""
