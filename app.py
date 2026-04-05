@@ -268,7 +268,7 @@ f_dsat = d_f[d_f['email'].isin(scoped_emails)]
 # --- 7. MAIN UI ---
 header_col1, header_col2 = st.columns([1, 10])
 with header_col1: st.image(LOGO_URL, width=80)
-with header_col2: st.title("Implementation Team Performance Hub")
+with header_col2: st.title("The Go-Getters Team Performance Hub")
 
 st.success(f"Welcome **{user.get('name', 'User')}**!! | Access Level : **{access}**")
 
